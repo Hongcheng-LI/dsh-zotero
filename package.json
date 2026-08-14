@@ -1,0 +1,53 @@
+{
+  "name": "dsh-zotero",
+  "version": "0.1.0",
+  "description": "Zotero tools for DeepSeek Harness: search your library, read item metadata, list collections and attachments, download PDFs and attach notes via the Zotero local API.",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "dsh.plugin.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepare": "tsc",
+    "prepublishOnly": "pnpm run build",
+    "test": "npm run build && node --test \"test/*.test.mjs\"",
+    "test:smoke": "npm run build && node --test test/smoke.mjs"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "dsh",
+    "zotero",
+    "reference-manager",
+    "research"
+  ],
+  "author": "lhc",
+  "license": "MIT",
+  "packageManager": "pnpm@10.14.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.3"
+  }
+}

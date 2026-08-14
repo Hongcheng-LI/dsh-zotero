@@ -1,0 +1,20 @@
+# dsh-zotero: Zotero library tools for DeepSeek Harness.
+#
+# 需要在 Zotero 7 中开启「设置 → 高级 → 允许本机上的其他应用程序与 Zotero 通信」，
+# 默认通过 http://127.0.0.1:23119 的本地 API 访问本机文献库，无需 API Key。
+#
+# 该行自带空配置，安装后不会破坏启动；默认配置即可用。
+# 如需自定义，在你的 profile 的 cordis.patch.yml 里覆盖此行（后层优先）：
+#
+#   - id: tool-zotero
+#     config:
+#       baseUrl: http://127.0.0.1:23119   # Zotero 本地 API 地址
+#       library: user                      # user（我的文献库）或 group:<群组ID>
+#       downloadDir: D:/papers             # 附件下载目录，缺省存到会话工作区
+#       dataDir: D:/ZoteroData             # Zotero 数据目录（含 profiles.ini），默认自动探测
+#       storageDir: D:/ZoteroData/Profiles/xxx.default/zotero/storage  # 直接指定 storage 目录
+#       maxFulltextChars: 80000            # zotero_fulltext 返回的最大字符数
+- insert:
+    - id: tool-zotero
+      name: dsh-zotero
+      config: {}
