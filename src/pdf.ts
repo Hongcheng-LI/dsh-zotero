@@ -1,8 +1,21 @@
 // PDF 文本提取：用 pdfjs-dist（纯 JS legacy build，无 worker，内存解析）。
 // 用于 zotero_fulltext 在 Zotero 全文缓存（.zotero-ft-cache）未命中时，现场解析 PDF 返回全文。
 import { readFile } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
+import { createRequire } from 'node:module'
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs'
 import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist'
+
+// pdfjs 在 Node 环境用 NodeStandardFontDataFactory（fs.readFile 直接读路径），
+// 只需提供 standardFontDataUrl = 文件系统路径（带尾斜杠），消除字体加载警告。
+const require = createRequire(import.meta.url)
+const STANDARD_FONT_DIR = (() => {
+  try {
+    return join(dirname(require.resolve('pdfjs-dist/package.json')), 'standard_fonts')
+  } catch {
+    return null
+  }
+})()
 
 /**
  * 解析 PDF 文件为纯文本。
@@ -19,6 +32,7 @@ export async function extractPdfText(path: string, maxChars = 0): Promise<string
       useSystemFonts: false,
       disableFontFace: true,
       isEvalSupported: false,
+      ...(STANDARD_FONT_DIR ? { standardFontDataUrl: `${STANDARD_FONT_DIR.replace(/\\/g, '/')}/` } : {}),
     }).promise
 
     let text = ''
