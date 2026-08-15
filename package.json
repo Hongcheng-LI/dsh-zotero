@@ -15,6 +15,7 @@
   },
   "files": [
     "lib",
+    "src",
     "cordis.patch.yml",
     "dsh.plugin.json",
     "README.md",
@@ -23,9 +24,11 @@
   "scripts": {
     "build": "tsc",
     "prepare": "tsc",
+    "prepack": "tsc",
     "prepublishOnly": "pnpm run build",
     "test": "npm run build && node --test \"test/*.test.mjs\"",
-    "test:smoke": "npm run build && node --test test/smoke.mjs"
+    "test:smoke": "npm run build && node --test test/smoke.mjs",
+    "audit": "node tools/audit-with-plugin-check.mjs . --kind=bundle"
   },
   "keywords": [
     "dsh-plugin",
@@ -45,6 +48,9 @@
     "bundle": {
       "patch": "./cordis.patch.yml"
     }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
