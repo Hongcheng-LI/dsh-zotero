@@ -1,9 +1,10 @@
 import { existsSync } from 'node:fs'
-import { stat } from 'node:fs/promises'
+import { stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 import { resolveConfig, trimItems, ZoteroClient, ZoteroError } from './zotero-client.js'
 import { attachmentStoragePath, readFulltextCache, readFulltextFile, resolveStorageDir } from './storage.js'
 import { fileUrlToPath, writeAttachment } from './files.js'
+import { extractPdfText } from './pdf.js'
 import type {
   ResultMode,
   ZoteroAttachmentPathResult,
@@ -297,7 +298,7 @@ export function apply(ctx: any, config: Config = {}): void {
   ctx.tools.register({
     name: 'zotero_fulltext',
     description:
-      'Read the full text of a Zotero item (its PDF or other main attachment) as plain text — from Zotero\'s own fulltext cache when available, otherwise the attachment is downloaded into the session workspace and its path returned. Prefer this over zotero_download when you only need the text.',
+      'Read the full text of a Zotero item (its PDF or other main attachment) as plain text — from Zotero\'s own fulltext cache (.zotero-ft-cache) when available, otherwise parsed on the fly from the local PDF (pdfjs-dist) and cached. Only for remote-link-only attachments does it download a copy to the workspace and return its path. Prefer this over zotero_download when you only need the text.',
     parameters: {
       type: 'object',
       properties: {
@@ -355,6 +356,26 @@ export function apply(ctx: any, config: Config = {}): void {
         if (fromCache) return fromCache
         if (existsSync(filePath)) {
           const { size } = await stat(filePath)
+          // 缓存未命中：现场解析 PDF（pdfjs-dist）返回全文，并写缓存加速下次
+          if ((target.contentType ?? '').includes('pdf') || /\.pdf$/i.test(filePath)) {
+            try {
+              const extracted = await extractPdfText(filePath)
+              if (extracted.trim() !== '') {
+                await writeFile(join(dirname(filePath), '.zotero-ft-cache'), extracted, 'utf8').catch(() => {})
+                const truncated = extracted.length > resolved.maxFulltextChars
+                return {
+                  itemKey,
+                  attachmentKey: target.key,
+                  filename: basename(filePath),
+                  mode: 'text' as const,
+                  text: truncated ? extracted.slice(0, resolved.maxFulltextChars) : extracted,
+                  truncated,
+                }
+              }
+            } catch (error) {
+              ctx.logger?.warn?.('[dsh-zotero] PDF 解析失败，返回文件路径: ' + messageOf(error, 'unknown'))
+            }
+          }
           return {
             itemKey,
             attachmentKey: target.key,
