@@ -4,7 +4,9 @@
 
 <a name="中文"></a>
 
-DeepSeek Harness 的 Zotero 工具插件：让 agent 直接**检索你的 Zotero 文献库、阅读条目元数据与摘要、列出分类和 PDF 附件、把 PDF 下载到工作区阅读、代写读书笔记**。通过 Zotero 本地 API（7 代及以上可用，实测 9.x；`http://127.0.0.1:23119`）访问，无需 API Key，纯 Node 实现，零核心改动。
+DeepSeek Harness 的 Zotero 工具插件：让 agent 直接**检索你的 Zotero 文献库、阅读条目元数据与摘要、列出分类和 PDF 附件、读 PDF 全文、代写读书笔记**。通过 Zotero 本地 API（7 代及以上可用，实测 9.x；`http://127.0.0.1:23119`）访问，无需 API Key，纯 Node 实现，零核心改动。
+
+> **独立仓库**：本仓库是 dsh-zotero 的唯一正本（曾作为 dsh-scientific monorepo 的 `plugins/zotero`，2026-08 拆分独立）。配套的 skills / workflows 仍在 [dsh-scientific](https://github.com/Hongcheng-LI/dsh-scientific)。
 
 ## 前置条件
 
@@ -21,7 +23,7 @@ DeepSeek Harness 的 Zotero 工具插件：让 agent 直接**检索你的 Zotero
 | `zotero_search` | 按关键词检索文献库（标题/作者/年份），支持条目类型、分类、标签、年份区间（sinceYear/beforeYear）、排序、分页；`mode` 控制返回粒度省 token |
 | `zotero_recent` | 列出最近添加的条目（"我刚导入的文献"场景） |
 | `zotero_item` | 按 key 读取条目详情：作者、期刊、DOI、摘要、标签、附件列表 |
-| `zotero_fulltext` | 读条目全文纯文本：优先读 Zotero 全文缓存（`.zotero-ft-cache`，零下载），无缓存时自动下载 PDF 到工作区 |
+| `zotero_fulltext` | 读条目全文纯文本：优先读 Zotero 全文缓存（`.zotero-ft-cache`，零下载），无缓存时**现场解析本地 PDF**（pdfjs-dist，约 0.3s）并写缓存；仅远程链接附件才下载到工作区 |
 | `zotero_attachment_path` | 返回附件在 storage 的原始绝对路径，让 read 工具零拷贝直读 |
 | `zotero_download` | 把条目的 PDF 附件下载到会话工作区（默认），供模型用 read 工具阅读 |
 | `zotero_notes` | 列出某条目的子笔记，或全库按关键词搜笔记正文 |
