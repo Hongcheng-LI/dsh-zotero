@@ -1,10 +1,11 @@
 import { existsSync } from 'node:fs'
 import { stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
-import { resolveConfig, trimItems, ZoteroClient, ZoteroError } from './zotero-client.js'
+import { resolveConfig, trimItems, writeDisabledError, ZoteroClient, ZoteroError } from './zotero-client.js'
 import { attachmentStoragePath, readFulltextCache, readFulltextFile, resolveStorageDir } from './storage.js'
 import { fileUrlToPath, writeAttachment } from './files.js'
 import { extractPdfText } from './pdf.js'
+import { registerBundledSkill } from './skills.js'
 import type {
   ResultMode,
   ZoteroAttachmentPathResult,
@@ -61,14 +62,28 @@ function describeItem(item: ZoteroItemResult['item'], index?: number): string {
   return `${prefix}${item.title} [key=${item.key}${parts ? ' | ' + parts : ''}]`
 }
 
+/** totalResults 的口径提示：只有服务器计数含被过滤项时才需要额外说明 */
+function totalHint(value: ZoteroSearchResult): string {
+  if (value.totalResults === undefined) return ''
+  if (value.totalResultsKind === 'server-approximate') {
+    return `，服务器匹配 ${value.totalResults} 条（含已过滤的附件/笔记，可翻页的条目少于该数）`
+  }
+  return `，共匹配 ${value.totalResults} 条`
+}
+
 function renderSearch(value: ZoteroSearchResult): TextBlock[] {
   if (value.items.length === 0) {
-    return oneText(`检索完成，没有匹配的条目${value.totalResults !== undefined ? `（服务器匹配 ${value.totalResults} 条，均已按条件过滤）` : ''}。`)
+    const suffix =
+      value.totalResults === undefined
+        ? ''
+        : value.totalResultsKind === 'server-approximate'
+          ? `（服务器匹配 ${value.totalResults} 条，均已按条件过滤）`
+          : `（共匹配 ${value.totalResults} 条，均已按条件过滤）`
+    return oneText(`检索完成，没有匹配的条目${suffix}。`)
   }
   const lines = value.items.map((item, i) => describeItem(item, i + 1))
-  const total = value.totalResults !== undefined ? `，共匹配 ${value.totalResults} 条` : ''
   return oneText(
-    `Zotero 检索结果（展示 ${value.items.length} 条${total}）：\n\n${lines.join('\n')}\n\n用 zotero_item 配合 key 查看条目详情和附件。`,
+    `Zotero 检索结果（展示 ${value.items.length} 条${totalHint(value)}）：\n\n${lines.join('\n')}\n\n用 zotero_item 配合 key 查看条目详情和附件。`,
   )
 }
 
@@ -162,6 +177,12 @@ export function apply(ctx: any, config: Config = {}): void {
   const client = new ZoteroClient(resolved)
   const storageDir = resolveStorageDir({ dataDir: resolved.dataDir, storageDir: resolved.storageDir })
 
+  // 随包 skill（skills/paper-reading）注册进 DSH 技能注册表；失败不影响插件加载。
+  const registeredSkill = registerBundledSkill(ctx)
+  if (registeredSkill !== null) {
+    ctx.logger?.info?.(`[dsh-zotero] 已注册随包 skill：${registeredSkill}`)
+  }
+
   // Load-time nudge only: never break boot, tools report the details instead.
   void client.ping().catch((error: unknown) => {
     ctx.logger?.warn?.('[dsh-zotero] ' + messageOf(error, 'Zotero 本地 API 不可用'))
@@ -169,11 +190,17 @@ export function apply(ctx: any, config: Config = {}): void {
   if (storageDir === null) {
     ctx.logger?.info?.('[dsh-zotero] 未找到 Zotero storage 目录，zotero_fulltext 将退化为下载附件；可在 cordis.patch.yml 配置 storageDir/dataDir')
   }
+  if (resolved.writeEnabled && resolved.apiKey === undefined) {
+    ctx.logger?.info?.(
+      '[dsh-zotero] writeEnabled=true 但未配置 apiKey：写操作会因缺少本地 API 授权（401）失败。' +
+        '在 Zotero 完成一次本地授权（POST /api/local/authorize）后把密钥填入 apiKey。',
+    )
+  }
 
   ctx.tools.register({
     name: 'zotero_collections',
     description:
-      'List the collections (folders) of the Zotero library, with their keys and item counts. Use a returned collectionKey as the collection argument of zotero_search to scope a search. Requires Zotero 7+ (tested on 9.x) running locally with "Allow other applications on this computer" enabled.',
+      'List the collections (folders) of the Zotero library, with their keys and item counts. Use a returned collectionKey as the collection argument of zotero_search to scope a search. Requires Zotero 7+ (tested on Zotero 10.0.3) running locally with "Allow other applications on this computer" enabled.',
     parameters: {
       type: 'object',
       properties: {},
@@ -213,6 +240,7 @@ export function apply(ctx: any, config: Config = {}): void {
         properties: {
           count: { type: 'integer' },
           totalResults: { type: 'integer' },
+          totalResultsKind: { type: 'string' },
           items: { type: 'array', items: { type: 'object', additionalProperties: true } },
         },
       },
@@ -222,7 +250,7 @@ export function apply(ctx: any, config: Config = {}): void {
       const args = rawArgs as ZoteroSearchArgs
       const limit = clampInt(args.limit, 20, 1, Math.min(resolved.maxLimit, MAX_LIMIT))
       const offset = clampInt(args.offset, 0, 0, 10000)
-      const { items, totalResults } = await client.search({
+      const { items, totalResults, totalResultsKind } = await client.search({
         query: args.query,
         itemType: args.itemType,
         collection: args.collection,
@@ -234,7 +262,12 @@ export function apply(ctx: any, config: Config = {}): void {
         start: offset,
         limit,
       })
-      return { count: items.length, totalResults, items: trimItems(items, parseMode(args.mode)) }
+      return {
+        count: items.length,
+        totalResults,
+        totalResultsKind,
+        items: trimItems(items, parseMode(args.mode)),
+      }
     },
   })
 
@@ -547,18 +580,25 @@ export function apply(ctx: any, config: Config = {}): void {
       }
       const text = (args.text ?? '').trim()
       const tags = Array.isArray(args.tags) ? args.tags : undefined
+      // 参数先校验（纯本地判断），再检查写入开关：未启用时不读取条目、不发任何请求。
+      const requireWriteEnabled = () => {
+        if (!resolved.writeEnabled) throw writeDisabledError()
+      }
       if (action === 'create') {
         const itemKey = requireKey(args.itemKey, 'itemKey')
         if (text === '') throw new Error('text 不能为空')
+        requireWriteEnabled()
         const noteKey = await client.addNote(itemKey, text, tags)
         return { action, parentKey: itemKey, noteKey }
       }
       const noteKey = requireKey(args.noteKey, 'noteKey')
       if (action === 'delete') {
+        requireWriteEnabled()
         await client.deleteNote(noteKey)
         return { action, noteKey }
       }
       if (text === '') throw new Error(`action=${action} 时 text 不能为空`)
+      requireWriteEnabled()
       if (action === 'append') await client.appendNote(noteKey, text)
       else await client.updateNote(noteKey, text, tags)
       return { action, noteKey }

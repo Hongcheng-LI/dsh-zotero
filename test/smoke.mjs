@@ -9,6 +9,8 @@
  * 覆盖链路：zotero_recent → zotero_item（找带附件的条目）→ zotero_search
  * → zotero_fulltext（ft-cache 或下载兜底）→ 笔记生命周期 create/append/update/delete。
  * 笔记测试自带清理：结束时删除创建的笔记，不影响真实文献库。
+ * 写入默认关闭（writeEnabled 默认 false）：加 ZOTERO_SMOKE_WRITE=1 才跑写库链路，
+ * 必要时用 ZOTERO_API_KEY=<本地授权密钥> 提供 API key。
  */
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
@@ -20,6 +22,8 @@ import { apply } from '../lib/index.js'
 const ENABLED =
   process.env.ZOTERO_SMOKE === '1' || process.env.npm_lifecycle_event === 'test:smoke'
 const BASE_URL = (process.env.ZOTERO_BASE_URL ?? 'http://127.0.0.1:23119').replace(/\/+$/, '')
+/** 写库链路默认跳过：只有显式打开开关才真正创建/修改笔记 */
+const WRITE_ENABLED = process.env.ZOTERO_SMOKE_WRITE === '1'
 const SKIP_REASON = '真实环境冒烟测试：用 npm run test:smoke 运行（需要本机 Zotero 7+ 在线）'
 
 function harness(config) {
@@ -59,8 +63,12 @@ test('zotero: 本地 API 在线', { skip: ENABLED ? false : SKIP_REASON }, async
     return t.skip(`Zotero 本地 API 不可达（${BASE_URL}）。请启动 Zotero（7 及以上，含 9.x），并在 设置 → 高级 → 通用 勾选「允许本机上的其他应用程序与 Zotero 通信」。`)
   }
   state.tempDir = mkdtempSync(join(tmpdir(), 'dsh-zotero-smoke-'))
-  // downloadDir 指向临时目录，冒烟测试不在用户工作区留文件
-  state.ctx = harness({ baseUrl: BASE_URL, downloadDir: state.tempDir })
+  // downloadDir 指向临时目录，冒烟测试不在用户工作区留文件；写入需显式开关
+  state.ctx = harness({
+    baseUrl: BASE_URL,
+    downloadDir: state.tempDir,
+    ...(WRITE_ENABLED ? { writeEnabled: true, apiKey: process.env.ZOTERO_API_KEY } : { writeEnabled: false }),
+  })
   t.diagnostic(`已连接 ${BASE_URL}，附件下载目录 ${state.tempDir}`)
 })
 

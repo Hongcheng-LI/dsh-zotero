@@ -8,12 +8,18 @@ DeepSeek Harness 的 Zotero 工具插件：让 agent 直接**检索你的 Zotero
 
 > **独立仓库**：本仓库是 dsh-zotero 的唯一正本（曾作为 dsh-scientific monorepo 的 `plugins/zotero`，2026-08 拆分独立）。配套的 skills / workflows 仍在 [dsh-scientific](https://github.com/Hongcheng-LI/dsh-scientific)。
 
+## DSH 兼容性
+
+当前 `0.1.4` 的 9 个 Zotero 工具沿用官方接口 `inject = ['tools']`、`ctx.tools.register(...)`、`output.schema/output.render` 和 `execute(args, exec)`，无需重写；复核基线为 `@deepseek-ai/dsh@0.2.0-rc.1`（复核在 `0.1.3` 代码上完成，`0.1.4` 未改动这些接口）。`0.1.4` 新增的随包 skill 自注册（`ctx.skills`）不在该范围内，skills 服务缺失或同名重复时静默降级，不影响这 9 个工具加载。
+
+从 GitHub 安装时，本仓库直接提交 `lib/` 构建产物，因此安装不再依赖 Git 依赖的 `prepare` 构建脚本，可避开 pnpm 10 对 Git build script 的限制。`dsh.plugin.json` 仅保留给旧工具读取；DSH 0.2 的安装/启用以 `package.json` 中的 `dsh.bundle` 和 `cordis.patch.yml` 为准。
+
 ## 前置条件
 
-1. 本机安装并运行 **Zotero 7 及以上**（本地 API 自 7 代引入；本项目在 **Zotero 9.0.6 / Windows** 上实测通过）；
+1. 本机安装并运行 **Zotero 7 及以上**（本地 API 自 7 代引入；本项目在 **Zotero 10.0.3 / Windows** 上实测通过）；
 2. 打开 Zotero：**设置 → 高级 → 通用 → 勾选「允许本机上的其他应用程序与 Zotero 通信」**。
 
-> 兼容性说明：读取类工具（检索/条目/全文/附件路径/笔记读取）在 Zotero 9 上全部实测通过。笔记**写入**（create/append/update/delete）受本地 API 只读限制不可用（见工具表说明）。
+> 兼容性说明：读取类工具（检索/条目/全文/附件路径/笔记读取）在 Zotero 10.0.3 上实测通过。笔记**写入**（create/append/update/delete）默认关闭（`writeEnabled: false`）；Zotero 本地 API 并非只读——写入可用，但要求 `Zotero-Server-ID` 匹配并完成一次本地授权（`POST /api/local/authorize`）换取 API key，插件不代你执行该握手（见工具表与 `writeEnabled`/`apiKey` 配置）。
 
 ## 工具一览
 
@@ -27,11 +33,44 @@ DeepSeek Harness 的 Zotero 工具插件：让 agent 直接**检索你的 Zotero
 | `zotero_attachment_path` | 返回附件在 storage 的原始绝对路径，让 read 工具零拷贝直读 |
 | `zotero_download` | 把条目的 PDF 附件下载到会话工作区（默认），供模型用 read 工具阅读 |
 | `zotero_notes` | 列出某条目的子笔记，或全库按关键词搜笔记正文 |
-| `zotero_note` | 笔记写入：create 新增 / append 追加 / update 更新 / delete 删除。⚠️ 实测多数版本的本地 API 为只读（POST/PATCH/DELETE 未开放），写操作会返回明确提示并建议手动操作 |
+| `zotero_note` | 笔记写入：create 新增 / append 追加 / update 更新 / delete 删除。默认关闭（`writeEnabled: false`），此时不发任何请求、直接给出可操作提示；开启后还需完成 Zotero 本地 API 授权（`POST /api/local/authorize`）并把密钥填入 `apiKey` |
+
+另有随包 skill `paper-reading`（结构化文献精读）：插件启动时会把它注册进 DSH 的技能目录，无需额外配置。
 
 示例对话：
 
 > 在我的 Zotero 里搜一下 transformer 相关的论文，挑 2020 年以后的，把第一篇的全文读一遍，给我写个摘要存进笔记。
+
+
+### 0.1.4 修复
+
+- `writeEnabled` 不再是无效配置：默认 `false` 时写工具在**发起任何请求前**就拒绝，并解释开启路径；设为 `true` 时写请求会带上 `Zotero-Server-ID`（从 `GET /api/` 公开读取）与配置的 `apiKey`（`Zotero-API-Key` 头）。
+- 写失败按 Zotero 的真实状态码归因，不再笼统说「服务器只读」：`401` → 需要本地授权（`POST /api/local/authorize` 换 API key，填入 `apiKey`）；`412` → Server-ID 与实例不匹配；`428` → 未取到 Server-ID；只有 `405/501/400` 才表示端点确实不支持写入。
+- `zotero_search` 的 `totalResults` 口径修正：不再把服务器匹配数当成可翻页条目数。Zotero 10 的 `itemType=-attachment` 会**同时排除附件与标注（annotation）、却保留笔记**（实测全库 13169 = 顶层 4938 + 笔记 1541 + 附件 4662 + 标注 2028），因此既不能用原始计数（6479），也不能用「全部 − 附件 − 笔记」（6966，多算了 2028 条标注）。插件改用四个 `limit=1` 计数推算，并在服务器忽略负向参数时自动切换算法；结果通过 `totalResultsKind: visible | server-approximate` 暴露，带年份过滤时标注 `server-approximate` 并在渲染文案里说明口径。
+- 随包 `skills/paper-reading` 现在真正生效：插件按 `dsh-skill-office` 的方式向 `ctx.skills` 注册自带 provider（rank 600），不再需要在 `customSkillDirs` 里额外配置；注册表缺失或重复注册时静默降级，不影响加载。
+
+### 0.1.3 修复
+
+- 修复 Zotero 10.0.3 本地 API 不识别 `itemType=-attachment -note` 的问题：默认检索改为服务端单值排除 `attachment`，客户端继续排除 `note`，并自动翻页补足 `limit`。
+- `zotero_recent` 与 collection 限定检索复用同一过滤流程，不再混入附件或笔记。
+- storage 自动探测优先支持 Zotero 7+ 的 `<profile>/storage`，并保留旧的 `<profile>/zotero/storage` 兼容。
+- Zotero 10 返回 HTTP 428 `Zotero-Server-ID not provided` 时，笔记写操作转换为明确的提示（0.1.4 起改为按 HTTP 状态码归因，见上）；空 `statusText` 不再显示为 `undefined`。
+- 发布包现在包含 `skills/paper-reading/SKILL.md`。
+
+### 0.1.2 修复
+
+- 修复 DSH Remote JSON 校验失败：返回对象不再包含嵌套 `undefined`。
+- `zotero_collections` 支持完整分页，并正确保留顶层分类的 `parentCollection: false`。
+- `zotero_search` 在使用 collection 前先校验 collectionKey，避免无效 key 被 Zotero 10 本地 API 静默当作全库。
+- 默认检索在服务端排除 attachment/note；年份过滤会连续分页直到取够 `limit`，并在过滤后应用 `offset`。
+- 条目子附件/笔记列表支持超过 100 条时继续分页。
+
+### 0.1.1 修复
+
+- 把 `lib/` 构建产物纳入版本库（`.gitignore` 去掉 `lib/`），从 GitHub / profile 安装不再依赖构建步骤。
+- 移除 `prepare` 脚本；发布仍由 `prepack` 重新构建。
+- `dsh.plugin.json`（供旧工具读取）与运行时导出的 `inject: ["tools"]` 保持同步；DSH 激活以 `package.json` 的 `dsh.bundle.patch` + `cordis.patch.yml` 为准。
+- 新增包布局测试 `test/package.test.mjs`，防止以后重新引入 Git 安装时的构建依赖。
 
 ## 安装
 
@@ -58,11 +97,13 @@ dsh plugin --profile web add github:<你的账号>/dsh-zotero#<commit>
     library: user                      # user（我的文献库）或 group:<群组ID>
     downloadDir: D:/papers             # 附件下载目录，缺省存到会话工作区
     dataDir: D:/ZoteroData             # Zotero 数据目录（含 profiles.ini），默认自动探测
-    storageDir: .../zotero/storage     # 直接指定 storage 目录（zotero_fulltext / attachment_path 用）
+    storageDir: .../storage     # 直接指定 storage 目录（zotero_fulltext / attachment_path 用）
     maxAttachmentBytes: 67108864       # 单附件下载上限，默认 64MB
     maxFulltextChars: 80000            # zotero_fulltext 返回的最大字符数，默认 80000
     maxLimit: 50                       # 检索结果条数上限，默认 50
     timeoutMs: 15000                   # 本地 API 超时（毫秒）
+    writeEnabled: false                # 是否允许 zotero_note 写入（默认 false）
+    apiKey: <授权得到的密钥>            # writeEnabled: true 且完成本地授权后填入
 ```
 
 全文与附件路径：插件通过本地 API `/file` 端点的 302 重定向拿到附件的真实磁盘路径（自定义数据目录也能自动识别，无需配置），全文优先读 Zotero 自己维护的 `.zotero-ft-cache` 缓存（与附件同目录）。`dataDir`/`storageDir` 配置仅在重定向不可用时作为兜底。
@@ -75,7 +116,7 @@ npm test          # 构建单元测试（离线，不需要 Zotero）
 npm run test:smoke # 真实环境冒烟测试：对本机 Zotero 完整跑一遍工具链
 ```
 
-冒烟测试覆盖 `zotero_recent → zotero_item → zotero_search → zotero_fulltext → zotero_attachment_path → 笔记 create/append/update/delete` 全链路，需要 Zotero 7+（实测 9.0.6）在线（不可达时自动 skip，不报错）。笔记测试会创建并清理自己的笔记，附件下载进系统临时目录，不会污染你的文献库和工作区；如果当前 Zotero 版本的本地 API 不支持 PATCH/DELETE 写操作，会以 skip/diagnostic 形式明确报告而不是误报失败。指定 API 地址：`ZOTERO_SMOKE=1 ZOTERO_BASE_URL=http://127.0.0.1:23119 node --test test/smoke.mjs`。
+冒烟测试覆盖 `zotero_recent → zotero_item → zotero_search → zotero_fulltext → zotero_attachment_path → 笔记 create/append/update/delete` 全链路，需要 Zotero 7+（实测 10.0.3）在线（不可达时自动 skip，不报错）。笔记生命周期测试默认跳过（写入默认关闭）：设 `ZOTERO_SMOKE_WRITE=1`（必要时加 `ZOTERO_API_KEY=<本地授权密钥>`）才会真正写库。笔记测试会创建并清理自己的笔记，附件下载进系统临时目录，不会污染你的文献库和工作区；如果当前 Zotero 版本的本地 API 不支持 PATCH/DELETE 写操作，会以 skip/diagnostic 形式明确报告而不是误报失败。指定 API 地址：`ZOTERO_SMOKE=1 ZOTERO_BASE_URL=http://127.0.0.1:23119 node --test test/smoke.mjs`。
 
 结构遵循 DSH 插件规范：`dsh.plugin.json` 元信息、`cordis.patch.yml` 运行时注入行、`src/` 源码、`lib/` 构建产物。
 
@@ -85,7 +126,7 @@ npm run test:smoke # 真实环境冒烟测试：对本机 Zotero 完整跑一遍
 
 Zotero tools for DeepSeek Harness: search your library, read item metadata and abstracts, list collections and PDF attachments, download PDFs into the session workspace, and attach notes — all through the Zotero local API (no API key needed).
 
-Requires Zotero 7+ (tested on 9.0.6 / Windows) running locally with "Allow other applications on this computer" enabled in Settings → Advanced.
+Requires Zotero 7+ (tested on 10.0.3 / Windows) running locally with "Allow other applications on this computer" enabled in Settings → Advanced.
 
 | Tool | What it does |
 |---|---|

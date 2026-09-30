@@ -10,6 +10,7 @@ import type {
   ZoteroItem,
   ZoteroNote,
   ResultMode,
+  ZoteroTotalKind,
 } from './types.js'
 import { noteToText } from './notes.js'
 
@@ -18,6 +19,8 @@ const DEFAULT_TIMEOUT_MS = 15000
 const DEFAULT_MAX_BYTES = 64 * 1024 * 1024
 const DEFAULT_MAX_LIMIT = 50
 const DEFAULT_MAX_FULLTEXT_CHARS = 80000
+/** 子项类型：默认检索里必须剔除的条目（annotation 是 PDF 标注，挂在附件下） */
+const SUBITEM_TYPES = new Set(['attachment', 'note', 'annotation'])
 
 export type ResolvedConfig = {
   baseUrl: string
@@ -29,6 +32,8 @@ export type ResolvedConfig = {
   dataDir: string | undefined
   storageDir: string | undefined
   maxFulltextChars: number
+  writeEnabled: boolean
+  apiKey: string | undefined
 }
 
 export function resolveConfig(config: ZoteroConfig = {}): ResolvedConfig {
@@ -47,6 +52,8 @@ export function resolveConfig(config: ZoteroConfig = {}): ResolvedConfig {
     dataDir: config.dataDir && config.dataDir.trim() !== '' ? config.dataDir.trim() : undefined,
     storageDir: config.storageDir && config.storageDir.trim() !== '' ? config.storageDir.trim() : undefined,
     maxFulltextChars: positiveInt(config.maxFulltextChars, DEFAULT_MAX_FULLTEXT_CHARS),
+    writeEnabled: config.writeEnabled === true,
+    apiKey: config.apiKey && config.apiKey.trim() !== '' ? config.apiKey.trim() : undefined,
   }
 }
 
@@ -65,6 +72,19 @@ export class ZoteroError extends Error {
   }
 }
 
+/**
+ * writeEnabled=false 时的统一提示，工具层与客户端层共用：
+ * 写操作直接给出可操作路径，不发起任何请求，也不把原因归给「服务器只读」。
+ */
+export function writeDisabledError(): ZoteroError {
+  return new ZoteroError(
+    '写入未启用（writeEnabled 未设置为 true），不支持该写操作。如需让插件创建/修改/删除笔记：' +
+      '在 cordis.patch.yml 的 dsh-zotero 配置里设置 writeEnabled: true；' +
+      'Zotero 本地 API 还要求完成一次本地授权（POST /api/local/authorize，Zotero 会弹出授权对话框）取得 API key，' +
+      '把密钥填入 apiKey。在完成授权之前，请在 Zotero 中手动操作（创建/修改笔记）；读取功能不受影响。',
+  )
+}
+
 type RawItem = {
   key: string
   version?: number
@@ -76,13 +96,53 @@ type RawItem = {
 export class ZoteroClient {
   constructor(private readonly cfg: ResolvedConfig) {}
 
+  /** 缓存的 Zotero-Server-ID（null 表示取不到），写请求需要它才能通过 412 检查 */
+  private serverIdCache: string | null | undefined
+
+  /** 从 GET /api/ 的响应头读取本实例的 Server-ID（Zotero 自己公开返回，无需授权） */
+  private async serverId(): Promise<string | undefined> {
+    if (this.serverIdCache === undefined) {
+      try {
+        const response = await fetch(`${this.cfg.baseUrl}/api/`, {
+          headers: { 'Zotero-Allowed-Request': 'true' },
+          signal: AbortSignal.timeout(this.cfg.timeoutMs),
+        })
+        const value = response.headers.get('Zotero-Server-ID')?.trim()
+        this.serverIdCache = value ? value : null
+      } catch {
+        this.serverIdCache = null
+      }
+    }
+    return this.serverIdCache ?? undefined
+  }
+
   private async request(path: string, init: RequestInit = {}): Promise<Response> {
     const url = `${this.cfg.baseUrl}/api/${this.cfg.libraryPath}${path}`
+    const method = (init.method ?? 'GET').toUpperCase()
+    const isWrite = method === 'POST' || method === 'PATCH' || method === 'PUT' || method === 'DELETE'
+
+    // writeEnabled=false：不发任何请求，直接给出可操作的提示（而不是把原因归给服务器）。
+    if (isWrite && !this.cfg.writeEnabled) {
+      throw writeDisabledError()
+    }
+
+    // 写请求带上身份：Server-ID 是 Zotero 公开的信息，缺失会被 428/412 拒绝；
+    // API key 需用户完成本地授权后配置。
+    const headers: Record<string, string> = {
+      'Zotero-Allowed-Request': 'true',
+      ...((init.headers as Record<string, string> | undefined) ?? {}),
+    }
+    if (isWrite) {
+      const serverId = await this.serverId()
+      if (serverId !== undefined) headers['Zotero-Server-ID'] = serverId
+      if (this.cfg.apiKey !== undefined) headers['Zotero-API-Key'] = this.cfg.apiKey
+    }
+
     let response: Response
     try {
       response = await fetch(url, {
         ...init,
-        headers: { 'Zotero-Allowed-Request': 'true', ...(init.headers ?? {}) },
+        headers,
         signal: AbortSignal.timeout(this.cfg.timeoutMs),
       })
     } catch (error) {
@@ -93,15 +153,51 @@ export class ZoteroClient {
     }
     if (!response.ok) {
       const body = await response.text().catch(() => '')
-      if (response.status === 400 && body.includes('Endpoint does not support method')) {
-        throw new ZoteroError(
-          '当前 Zotero 本地 API 为只读，不支持该写操作（POST/PATCH/DELETE 未开放）：笔记的创建/修改/删除不可用，读取不受影响。',
-        )
+      const writeBlocked =
+        isWrite &&
+        (response.status === 401 ||
+          response.status === 412 ||
+          (response.status === 428 && /Zotero-Server-ID not provided/i.test(body)) ||
+          (response.status === 400 && body.includes('Endpoint does not support method')) ||
+          response.status === 405 ||
+          response.status === 501)
+      if (writeBlocked) {
+        throw new ZoteroError(this.writeBlockedMessage(response.status, body))
       }
-      const hint = response.status === 405 || response.status === 501 ? '（当前 Zotero 版本可能不支持该写操作）' : ''
-      throw new ZoteroError(`Zotero API ${response.status} ${response.statusText}${hint}${body ? '：' + body.slice(0, 300) : ''}`)
+      const statusText = response.statusText?.trim()
+      const statusLabel = statusText ? `${response.status} ${statusText}` : String(response.status)
+      throw new ZoteroError(`Zotero API ${statusLabel}${body ? '：' + body.slice(0, 300) : ''}`)
     }
     return response
+  }
+
+  /** 写入被拒时按 Zotero 的实际状态码给出可操作的归因，不再笼统归因于「服务器只读」 */
+  private writeBlockedMessage(status: number, body: string): string {
+    if (status === 401) {
+      return (
+        '写入需要 Zotero 授权，当前没有可用的 API key，不支持该写操作。' +
+        '请在 Zotero 中完成一次本地 API 授权（POST /api/local/authorize，Zotero 会弹出授权对话框确认），' +
+        '把取得的密钥填入配置项 apiKey（writeEnabled 需为 true）；或直接在 Zotero 中手动创建/修改笔记。' +
+        `读取功能不受影响。${body ? `（Zotero 应答：${body.slice(0, 200)}）` : ''}`
+      )
+    }
+    if (status === 412) {
+      return (
+        'Zotero 拒绝了写入：Zotero-Server-ID 与当前 Zotero 实例不匹配，不支持该写操作。' +
+        `请确认 baseUrl（${this.cfg.baseUrl}）指向正在运行的 Zotero 实例；重启 Zotero 后重试，或直接在 Zotero 中手动操作。`
+      )
+    }
+    if (status === 428) {
+      return (
+        'Zotero 拒绝了写入：未提供 Zotero-Server-ID，不支持该写操作。' +
+        `插件未能从 ${this.cfg.baseUrl}/api/ 读取到 Server-ID（该头由 Zotero 公开返回），请确认 Zotero 版本与运行状态；` +
+        '也可直接在 Zotero 中手动操作。'
+      )
+    }
+    return (
+      '当前 Zotero 本地 API 未向外部客户端开放写入（该端点/方法不受支持），不支持该写操作：' +
+      '笔记的创建/修改/删除不可用，请在 Zotero 中手动操作；读取功能不受影响。'
+    )
   }
 
   /**
@@ -151,6 +247,77 @@ export class ZoteroClient {
     return (await response.json()) as T
   }
 
+  private async getJsonPage<T>(path: string): Promise<{ data: T; totalResults?: number }> {
+    const response = await this.request(path, { headers: { Accept: 'application/json' } })
+    const totalHeader = response.headers.get('Total-Results')
+    const total = totalHeader === null ? undefined : Number(totalHeader)
+    return {
+      data: (await response.json()) as T,
+      ...(Number.isFinite(total) ? { totalResults: total } : {}),
+    }
+  }
+
+  /** 只取 Total-Results（limit=1），用于按 itemType 数出各子类条目数 */
+  private async countRows(base: string, params: Array<[string, string]>): Promise<number | undefined> {
+    try {
+      const page = await this.getJsonPage<RawItem[]>(`${base}?${qs([...params, ['limit', '1']])}`)
+      return page.totalResults
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * 默认检索里「真正可翻页的条目数」。
+   *
+   * Zotero 10.0.3 的 `itemType=-attachment` 会同时排除附件与标注（annotation），
+   * 但**保留**笔记。实测全库 13169 = 顶层 4938 + 笔记 1541 + 附件 4662 + 标注 2028，
+   * 而 `itemType=-attachment` 返回 6479 = 顶层 + 笔记。因此：
+   * 既不能把服务器计数（6479）当成可见条目数，也不能用「全部 − 附件 − 笔记」（6966，多算了标注）。
+   * 这里用四个 limit=1 的计数把口径算准，并为「服务器忽略负向参数」的未来情形兜底。
+   */
+  private async visibleCount(
+    base: string,
+    commonParams: Array<[string, string]>,
+    serverRows: number,
+  ): Promise<number | undefined> {
+    const withoutItemType = commonParams.filter(([key]) => key !== 'itemType')
+    const [all, attachments, annotations, notes] = await Promise.all([
+      this.countRows(base, withoutItemType),
+      this.countRows(base, [...withoutItemType, ['itemType', 'attachment']]),
+      this.countRows(base, [...withoutItemType, ['itemType', 'annotation']]),
+      this.countRows(base, [...withoutItemType, ['itemType', 'note']]),
+    ])
+    if (all === undefined || attachments === undefined || annotations === undefined || notes === undefined) {
+      return undefined
+    }
+    const subitems = attachments + annotations
+    const excludedByServer = all - serverRows
+    if (excludedByServer < subitems) {
+      // 负向参数没生效：结果里仍含附件/标注，客户端会把它们连同笔记一起剔除
+      return Math.max(0, serverRows - subitems - notes)
+    }
+    const leftover = excludedByServer - subitems
+    if (notes > 0 && leftover >= notes) {
+      // 服务器把笔记也排除了：结果里只剩顶层条目
+      return Math.max(0, serverRows)
+    }
+    // 常规情形：结果 = 顶层 + 笔记，客户端剔除笔记后即可翻页数
+    return Math.max(0, serverRows - notes)
+  }
+
+  private async ensureCollectionExists(key: string): Promise<void> {
+    let raw: { key?: string }
+    try {
+      raw = await this.getJson<{ key?: string }>(`/collections/${encodeURIComponent(key)}?format=json`)
+    } catch (error) {
+      throw new ZoteroError(`Zotero 分类 ${key} 不存在或无法访问。请先用 zotero_collections 获取有效 collectionKey。`, error)
+    }
+    if ((raw.key ?? '').toUpperCase() !== key.toUpperCase()) {
+      throw new ZoteroError(`Zotero 分类 ${key} 不存在或返回异常。请先用 zotero_collections 获取有效 collectionKey。`)
+    }
+  }
+
   /** 探测连接与库可用性，返回库内条目总数 */
   async ping(): Promise<number> {
     const response = await this.request('/items?limit=1&format=json')
@@ -170,54 +337,102 @@ export class ZoteroClient {
     sort?: string
     direction?: string
     start?: number
-  }): Promise<{ items: ZoteroItem[]; totalResults?: number }> {
-    const params: Array<[string, string]> = [
-      ['limit', String(args.limit)],
-      ['format', 'json'],
-    ]
-    if (args.query && args.query.trim() !== '') params.push(['q', args.query.trim()])
-    if (args.itemType && args.itemType.trim() !== '') params.push(['itemType', args.itemType.trim()])
-    if (args.tag && args.tag.trim() !== '') params.push(['tag', args.tag.trim()])
-    if (args.sort && args.sort.trim() !== '') params.push(['sort', args.sort.trim()])
-    if (args.direction && args.direction.trim() !== '') params.push(['direction', args.direction.trim()])
-    if (args.start && args.start > 0) params.push(['start', String(args.start)])
-    const base = args.collection && args.collection.trim() !== ''
-      ? `/collections/${encodeURIComponent(args.collection.trim())}/items`
-      : '/items'
-    const response = await this.request(`${base}?${qs(params)}`, { headers: { Accept: 'application/json' } })
-    const totalResults = Number(response.headers.get('Total-Results')) || undefined
-    const raw = (await response.json()) as RawItem[]
-    // 用户没有显式检索附件/笔记时才自动排除这两类
-    const requestedTypes = (args.itemType ?? '').toLowerCase()
-    const autoExclude = !requestedTypes.includes('attachment') && !requestedTypes.includes('note')
-    let items = raw
-      .filter((row) => !autoExclude || (row.data?.itemType !== 'attachment' && row.data?.itemType !== 'note'))
-      .map(slimItem)
+  }): Promise<{ items: ZoteroItem[]; totalResults: number; totalResultsKind: ZoteroTotalKind }> {
+    const collectionKey = args.collection?.trim()
+    if (collectionKey) await this.ensureCollectionExists(collectionKey)
+
+    const explicitItemType = args.itemType?.trim()
+    const excludeSubitems = !explicitItemType
+    const commonParams: Array<[string, string]> = [['format', 'json']]
+    if (args.query && args.query.trim() !== '') commonParams.push(['q', args.query.trim()])
+    if (explicitItemType) {
+      commonParams.push(['itemType', explicitItemType])
+    } else {
+      // Zotero 10.0.3 本地 API 只可靠支持单个负向 itemType。
+      // 先在服务端排除数量最多的 attachment，再在客户端排除 note；
+      // 即使未来服务端忽略该参数，客户端过滤仍能保证结果中没有子项。
+      commonParams.push(['itemType', '-attachment'])
+    }
+    if (args.tag && args.tag.trim() !== '') commonParams.push(['tag', args.tag.trim()])
+    if (args.sort && args.sort.trim() !== '') commonParams.push(['sort', args.sort.trim()])
+    if (args.direction && args.direction.trim() !== '') commonParams.push(['direction', args.direction.trim()])
+
+    const base = collectionKey ? `/collections/${encodeURIComponent(collectionKey)}/items` : '/items'
     const since = args.sinceYear
     const before = args.beforeYear
-    if (since !== undefined || before !== undefined) {
-      items = items.filter((item) => {
-        const year = extractYear(item.date)
-        if (year === undefined) return false
-        if (since !== undefined && year < since) return false
-        if (before !== undefined && year > before) return false
-        return true
-      })
+    const filteredOffset = Math.max(0, args.start ?? 0)
+    const needsClientFiltering = excludeSubitems || since !== undefined || before !== undefined
+
+    // 显式 itemType 且没有年份过滤时，不需要客户端再筛，可直接交给 Zotero 分页。
+    if (!needsClientFiltering) {
+      const params = [
+        ...commonParams,
+        ['limit', String(args.limit)] as [string, string],
+        ...(filteredOffset > 0 ? [['start', String(filteredOffset)] as [string, string]] : []),
+      ]
+      const page = await this.getJsonPage<RawItem[]>(`${base}?${qs(params)}`)
+      const items = page.data.map(slimItem)
+      // 调用方已显式限定 itemType：服务器计数就是该类型的可见数。
+      return { items, totalResults: page.totalResults ?? items.length, totalResultsKind: 'server' }
     }
-    return { items, totalResults }
+
+    // 默认检索要排除 attachment/note；年份也只能可靠地在客户端判定。
+    // 因此连续取页，直到跳过过滤后的 offset 且收集够 limit。
+    const pageSize = 100
+    const needed = filteredOffset + args.limit
+    const matched: ZoteroItem[] = []
+    let serverStart = 0
+    let totalResults: number | undefined
+
+    while (matched.length < needed) {
+      const params: Array<[string, string]> = [
+        ...commonParams,
+        ['limit', String(pageSize)],
+        ['start', String(serverStart)],
+      ]
+      const page = await this.getJsonPage<RawItem[]>(`${base}?${qs(params)}`)
+      if (totalResults === undefined) totalResults = page.totalResults
+      if (page.data.length === 0) break
+
+      for (const row of page.data) {
+        const item = slimItem(row)
+        if (excludeSubitems && SUBITEM_TYPES.has(item.itemType)) continue
+        if (since !== undefined || before !== undefined) {
+          const year = extractYear(item.date)
+          if (year === undefined) continue
+          if (since !== undefined && year < since) continue
+          if (before !== undefined && year > before) continue
+        }
+        matched.push(item)
+      }
+
+      serverStart += page.data.length
+      if (page.totalResults !== undefined && serverStart >= page.totalResults) break
+      if (page.data.length < pageSize && page.totalResults === undefined) break
+    }
+
+    // 客户端过滤后，服务器计数里仍含被剔除的子项，不能直接当成「共 N 条」。
+    // 无年份过滤时可精确算出可见条目数；有年份过滤时只能标注口径。
+    let visibleTotal: number | undefined
+    if (excludeSubitems && since === undefined && before === undefined) {
+      visibleTotal = await this.visibleCount(base, commonParams, totalResults ?? serverStart)
+    }
+
+    return {
+      items: matched.slice(filteredOffset, filteredOffset + args.limit),
+      totalResults: visibleTotal ?? totalResults ?? serverStart,
+      totalResultsKind: visibleTotal !== undefined ? 'visible' : 'server-approximate',
+    }
   }
 
-  /** 最近添加的条目（不含附件和笔记） */
+  /** 最近添加的顶层条目（不含附件和笔记） */
   async recent(limit: number): Promise<{ items: ZoteroItem[] }> {
-    const params = qs([
-      ['sort', 'dateAdded'],
-      ['direction', 'desc'],
-      ['limit', String(limit)],
-      ['format', 'json'],
-      ['itemType', '-attachment -note'],
-    ])
-    const raw = await this.getJson<RawItem[]>(`/items?${params}`)
-    return { items: raw.map(slimItem) }
+    const result = await this.search({
+      limit,
+      sort: 'dateAdded',
+      direction: 'desc',
+    })
+    return { items: result.items }
   }
 
   async item(key: string): Promise<{ item: ZoteroItem; attachments: ZoteroAttachment[]; childNotes: number }> {
@@ -228,39 +443,57 @@ export class ZoteroClient {
   }
 
   private async children(key: string): Promise<{ attachments: ZoteroAttachment[]; notes: ZoteroNote[] }> {
-    // 不带 limit 时 Zotero 默认只回 25 条，子笔记/附件多的条目会被截断
-    const raw = await this.getJson<RawItem[]>(`/items/${encodeURIComponent(key)}/children?${qs([['format', 'json'], ['limit', '100']])}`)
     const attachments: ZoteroAttachment[] = []
     const notes: ZoteroNote[] = []
-    for (const child of raw) {
-      const data = child.data ?? {}
-      if (data.itemType === 'attachment') {
-        attachments.push({
-          key: child.key,
-          itemType: String(data.itemType),
-          title: str(data.title),
-          contentType: str(data.contentType),
-          path: str(data.path),
-          filename: (str(data.path) ?? '').replace(/^storage:/, '').replace(/^attachments:/, '') || undefined,
-        })
-      } else if (data.itemType === 'note') {
-        notes.push(this.toNote(child, key))
+    const pageSize = 100
+    let start = 0
+
+    while (true) {
+      const page = await this.getJsonPage<RawItem[]>(
+        `/items/${encodeURIComponent(key)}/children?${qs([
+          ['format', 'json'],
+          ['limit', String(pageSize)],
+          ['start', String(start)],
+        ])}`,
+      )
+      for (const child of page.data) {
+        const data = child.data ?? {}
+        if (data.itemType === 'attachment') {
+          const path = str(data.path)
+          const filename = path?.replace(/^storage:/, '').replace(/^attachments:/, '')
+          attachments.push(omitUndefined({
+            key: child.key,
+            itemType: String(data.itemType),
+            title: str(data.title),
+            contentType: str(data.contentType),
+            path,
+            filename: filename || undefined,
+          }) as ZoteroAttachment)
+        } else if (data.itemType === 'note') {
+          notes.push(this.toNote(child, key))
+        }
       }
+
+      start += page.data.length
+      if (page.data.length === 0) break
+      if (page.totalResults !== undefined && start >= page.totalResults) break
+      if (page.data.length < pageSize && page.totalResults === undefined) break
     }
     return { attachments, notes }
   }
 
   private toNote(raw: RawItem, fallbackParent?: string): ZoteroNote {
     const data = raw.data ?? {}
-    return {
+    const tags = Array.isArray(data.tags)
+      ? (data.tags as Array<{ tag?: string }>).map((t) => t.tag ?? '').filter(Boolean)
+      : undefined
+    return omitUndefined({
       key: raw.key,
       parentKey: str(data.parentItem) ?? fallbackParent,
       text: noteToText(typeof data.note === 'string' ? data.note : ''),
-      tags: Array.isArray(data.tags)
-        ? (data.tags as Array<{ tag?: string }>).map((t) => t.tag ?? '').filter(Boolean)
-        : undefined,
+      tags: tags && tags.length > 0 ? tags : undefined,
       dateAdded: str(data.dateAdded),
-    }
+    }) as ZoteroNote
   }
 
   /** 笔记检索：给了 itemKey 列其子笔记；否则全库按关键词搜笔记 */
@@ -283,7 +516,13 @@ export class ZoteroClient {
     return raw.map((row) => this.toNote(row))
   }
 
+  /** 写入前的统一门禁：writeEnabled=false 时在读版本号之前就拒绝，不发任何请求 */
+  private assertWriteEnabled(): void {
+    if (!this.cfg.writeEnabled) throw writeDisabledError()
+  }
+
   async addNote(parentKey: string, text: string, tags?: string[]): Promise<string> {
+    this.assertWriteEnabled()
     const created = await this.postNote([
       { itemType: 'note', parentItem: parentKey, note: text, tags: (tags ?? []).map((t) => ({ tag: t })) },
     ])
@@ -292,6 +531,7 @@ export class ZoteroClient {
 
   /** 在现有笔记末尾追加内容 */
   async appendNote(noteKey: string, text: string): Promise<void> {
+    this.assertWriteEnabled()
     const head = await this.noteHead(noteKey)
     const existing = typeof head.data.note === 'string' ? head.data.note.trim() : ''
     const merged = existing === '' ? text : `${existing}\n\n${text}`
@@ -300,6 +540,7 @@ export class ZoteroClient {
 
   /** 整体替换笔记正文（可顺带更新标签） */
   async updateNote(noteKey: string, text: string, tags?: string[]): Promise<void> {
+    this.assertWriteEnabled()
     const head = await this.noteHead(noteKey)
     const patch: { note: string; tags?: Array<{ tag: string }> } = { note: text }
     if (tags !== undefined) patch.tags = tags.map((t) => ({ tag: t }))
@@ -307,6 +548,7 @@ export class ZoteroClient {
   }
 
   async deleteNote(noteKey: string): Promise<void> {
+    this.assertWriteEnabled()
     const head = await this.noteHead(noteKey)
     await this.request(`/items/${encodeURIComponent(noteKey)}`, {
       method: 'DELETE',
@@ -348,15 +590,35 @@ export class ZoteroClient {
   }
 
   async collections(): Promise<ZoteroCollection[]> {
-    const raw = await this.getJson<Array<{ key: string; data: Record<string, unknown>; meta?: Record<string, unknown> }>>(
-      `/collections?${qs([['format', 'json'], ['limit', '100']])}`,
-    )
-    return raw.map((row) => ({
-      key: row.key,
-      name: str(row.data?.name) ?? '(未命名)',
-      parentCollection: row.data?.parentCollection === undefined ? false : str(row.data?.parentCollection),
-      numberOfItems: Number(row.meta?.numItems ?? row.meta?.numberOfItems) || 0,
-    }))
+    const collections: ZoteroCollection[] = []
+    const pageSize = 100
+    let start = 0
+
+    while (true) {
+      const page = await this.getJsonPage<Array<{ key: string; data: Record<string, unknown>; meta?: Record<string, unknown> }>>(
+        `/collections?${qs([
+          ['format', 'json'],
+          ['limit', String(pageSize)],
+          ['start', String(start)],
+        ])}`,
+      )
+      for (const row of page.data) {
+        const parent = str(row.data?.parentCollection)
+        collections.push({
+          key: row.key,
+          name: str(row.data?.name) ?? '(未命名)',
+          parentCollection: parent ?? false,
+          numberOfItems: Number(row.meta?.numItems ?? row.meta?.numberOfItems) || 0,
+        })
+      }
+
+      start += page.data.length
+      if (page.data.length === 0) break
+      if (page.totalResults !== undefined && start >= page.totalResults) break
+      if (page.data.length < pageSize && page.totalResults === undefined) break
+    }
+
+    return collections
   }
 
   async attachmentInfo(itemKey: string, attachmentKey: string): Promise<ZoteroAttachment> {
@@ -432,6 +694,10 @@ function extractYear(date: string | undefined): number | undefined {
   return match ? Number(match[0]) : undefined
 }
 
+function omitUndefined<T extends Record<string, unknown>>(value: T): T {
+  return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined)) as T
+}
+
 /** 把 Zotero 原始条目压缩成模型友好的精简结构 */
 export function slimItem(raw: RawItem): ZoteroItem {
   const data = raw.data ?? {}
@@ -444,7 +710,7 @@ export function slimItem(raw: RawItem): ZoteroItem {
   const tags = Array.isArray(data.tags)
     ? (data.tags as Array<{ tag?: string }>).map((t) => t.tag ?? '').filter(Boolean)
     : undefined
-  return {
+  return omitUndefined({
     key: raw.key,
     itemType: str(data.itemType) ?? 'unknown',
     title: str(data.title) ?? str(data.name) ?? '(无标题)',
@@ -462,7 +728,7 @@ export function slimItem(raw: RawItem): ZoteroItem {
     tags: tags && tags.length > 0 ? tags : undefined,
     collections: Array.isArray(data.collections) ? (data.collections as string[]) : undefined,
     dateAdded: str(data.dateAdded),
-  }
+  }) as ZoteroItem
 }
 
 const MINIMAL_FIELDS = ['key', 'itemType', 'title', 'creators', 'date', 'publicationTitle', 'DOI'] as const
@@ -470,7 +736,7 @@ const PREVIEW_FIELDS = [...MINIMAL_FIELDS, 'url', 'tags'] as const
 
 /** 按粒度裁剪检索结果：minimal 只留定位字段；preview 附 400 字截断摘要；full 不动 */
 export function trimItems(items: ZoteroItem[], mode: ResultMode): ZoteroItem[] {
-  if (mode === 'full') return items
+  if (mode === 'full') return items.map((item) => omitUndefined({ ...item }) as ZoteroItem)
   const fields = mode === 'minimal' ? MINIMAL_FIELDS : PREVIEW_FIELDS
   return items.map((item) => {
     const trimmed: ZoteroItem = { ...pick(item, fields) }

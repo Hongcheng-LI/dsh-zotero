@@ -37,9 +37,18 @@ export function profileDirFromIni(ini: string, dataDir: string): string | null {
     else if (key === 'Path') current.path = value
     else if (key === 'IsRelative') current.relative = value !== '0'
   }
+  const normalizeProfileRef = (value: string) => value.replace(/\\/g, '/').replace(/^\.\//, '')
   const chosen =
-    sections.find((s) => s.path && s.name === installDefault) ?? sections.find((s) => s.path !== undefined)
-  if (!chosen?.path) return null
+    sections.find((s) => {
+      if (!s.path || !installDefault) return false
+      const path = normalizeProfileRef(s.path)
+      const wanted = normalizeProfileRef(installDefault)
+      return s.name === installDefault || path === wanted || path.endsWith(`/${wanted}`)
+    }) ?? sections.find((s) => s.path !== undefined)
+  if (!chosen?.path) {
+    if (!installDefault) return null
+    return join(dataDir, installDefault)
+  }
   return chosen.relative === false ? chosen.path : join(dataDir, chosen.path)
 }
 
@@ -51,8 +60,9 @@ export function resolveStorageDir(opts: { dataDir?: string; storageDir?: string 
     const ini = readFileSync(join(dataDir, 'profiles.ini'), 'utf8')
     const profile = profileDirFromIni(ini, dataDir)
     if (!profile) return null
-    const storage = join(profile, 'zotero', 'storage')
-    return existsSync(storage) ? storage : null
+    // Zotero 7+ 使用 <profile>/storage；旧版本/旧布局可能是 <profile>/zotero/storage。
+    const candidates = [join(profile, 'storage'), join(profile, 'zotero', 'storage')]
+    return candidates.find((candidate) => existsSync(candidate)) ?? null
   } catch {
     return null
   }
