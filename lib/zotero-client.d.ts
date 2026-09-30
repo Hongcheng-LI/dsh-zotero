@@ -1,4 +1,4 @@
-import type { ZoteroAttachment, ZoteroCollection, ZoteroConfig, ZoteroItem, ZoteroNote, ResultMode } from './types.js';
+import type { ZoteroAttachment, ZoteroCollection, ZoteroConfig, ZoteroItem, ZoteroNote, ResultMode, ZoteroTotalKind } from './types.js';
 export type ResolvedConfig = {
     baseUrl: string;
     libraryPath: string;
@@ -9,12 +9,19 @@ export type ResolvedConfig = {
     dataDir: string | undefined;
     storageDir: string | undefined;
     maxFulltextChars: number;
+    writeEnabled: boolean;
+    apiKey: string | undefined;
 };
 export declare function resolveConfig(config?: ZoteroConfig): ResolvedConfig;
 export declare class ZoteroError extends Error {
     readonly cause?: unknown | undefined;
     constructor(message: string, cause?: unknown | undefined);
 }
+/**
+ * writeEnabled=false 时的统一提示，工具层与客户端层共用：
+ * 写操作直接给出可操作路径，不发起任何请求，也不把原因归给「服务器只读」。
+ */
+export declare function writeDisabledError(): ZoteroError;
 type RawItem = {
     key: string;
     version?: number;
@@ -25,7 +32,13 @@ type RawItem = {
 export declare class ZoteroClient {
     private readonly cfg;
     constructor(cfg: ResolvedConfig);
+    /** 缓存的 Zotero-Server-ID（null 表示取不到），写请求需要它才能通过 412 检查 */
+    private serverIdCache;
+    /** 从 GET /api/ 的响应头读取本实例的 Server-ID（Zotero 自己公开返回，无需授权） */
+    private serverId;
     private request;
+    /** 写入被拒时按 Zotero 的实际状态码给出可操作的归因，不再笼统归因于「服务器只读」 */
+    private writeBlockedMessage;
     /**
      * 查询附件的本地文件地址。Zotero 本地 API 的 /file 端点返回 302，
      * Location 指向 file:///... （storage 内文件或链接附件的绝对路径），
@@ -35,6 +48,18 @@ export declare class ZoteroClient {
     attachmentFilePath(attachmentKey: string): Promise<string | null>;
     private getJson;
     private getJsonPage;
+    /** 只取 Total-Results（limit=1），用于按 itemType 数出各子类条目数 */
+    private countRows;
+    /**
+     * 默认检索里「真正可翻页的条目数」。
+     *
+     * Zotero 10.0.3 的 `itemType=-attachment` 会同时排除附件与标注（annotation），
+     * 但**保留**笔记。实测全库 13169 = 顶层 4938 + 笔记 1541 + 附件 4662 + 标注 2028，
+     * 而 `itemType=-attachment` 返回 6479 = 顶层 + 笔记。因此：
+     * 既不能把服务器计数（6479）当成可见条目数，也不能用「全部 − 附件 − 笔记」（6966，多算了标注）。
+     * 这里用四个 limit=1 的计数把口径算准，并为「服务器忽略负向参数」的未来情形兜底。
+     */
+    private visibleCount;
     private ensureCollectionExists;
     /** 探测连接与库可用性，返回库内条目总数 */
     ping(): Promise<number>;
@@ -52,6 +77,7 @@ export declare class ZoteroClient {
     }): Promise<{
         items: ZoteroItem[];
         totalResults: number;
+        totalResultsKind: ZoteroTotalKind;
     }>;
     /** 最近添加的顶层条目（不含附件和笔记） */
     recent(limit: number): Promise<{
@@ -70,6 +96,8 @@ export declare class ZoteroClient {
         query?: string;
         limit: number;
     }): Promise<ZoteroNote[]>;
+    /** 写入前的统一门禁：writeEnabled=false 时在读版本号之前就拒绝，不发任何请求 */
+    private assertWriteEnabled;
     addNote(parentKey: string, text: string, tags?: string[]): Promise<string>;
     /** 在现有笔记末尾追加内容 */
     appendNote(noteKey: string, text: string): Promise<void>;

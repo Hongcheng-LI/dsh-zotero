@@ -9,7 +9,7 @@ const pkg = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'))
 const legacyManifest = JSON.parse(readFileSync(resolve(root, 'dsh.plugin.json'), 'utf8'))
 
 test('package is self-contained for Git/profile installation', () => {
-  assert.equal(pkg.version, '0.1.3')
+  assert.equal(pkg.version, '0.1.4')
   assert.equal(pkg.main, 'lib/index.js')
   assert.ok(existsSync(resolve(root, pkg.main)), 'compiled lib/index.js must be checked in')
   assert.equal(pkg.scripts.prepare, undefined, 'Git install must not require a prepare build')

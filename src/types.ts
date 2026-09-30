@@ -17,6 +17,17 @@ export type ZoteroConfig = {
   storageDir?: string
   /** zotero_fulltext 返回的最大字符数，默认 80000 */
   maxFulltextChars?: number
+  /**
+   * 是否允许写入（笔记创建/追加/修改/删除）。默认 false：
+   * 写工具不发任何请求，直接返回可操作的提示。
+   */
+  writeEnabled?: boolean
+  /**
+   * Zotero 本地 API 授权得到的 API key（在 Zotero 中完成
+   * `POST /api/local/authorize` 后取得）。仅在 writeEnabled 为 true 时使用；
+   * 配置后写入请求会带上 `Zotero-API-Key`。
+   */
+  apiKey?: string
 }
 
 /** 检索结果粒度：minimal 只留定位字段，preview 附截断摘要，full 全量 */
@@ -83,9 +94,18 @@ export type ZoteroSearchArgs = {
   mode?: ResultMode
 }
 
+/**
+ * `totalResults` 的口径：
+ * - `visible`：客户端过滤（排除附件/笔记）后可翻页的条目数，精确值；
+ * - `server`：服务器在该查询下返回的计数（调用方已显式限定 itemType，等于可见数）；
+ * - `server-approximate`：服务器计数，其中仍包含被过滤掉的附件/笔记，仅作参考。
+ */
+export type ZoteroTotalKind = 'visible' | 'server' | 'server-approximate'
+
 export type ZoteroSearchResult = {
   count: number
   totalResults?: number
+  totalResultsKind?: ZoteroTotalKind
   items: ZoteroItem[]
 }
 
