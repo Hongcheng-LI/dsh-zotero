@@ -173,7 +173,7 @@ export function apply(ctx: any, config: Config = {}): void {
   ctx.tools.register({
     name: 'zotero_collections',
     description:
-      'List the collections (folders) of the Zotero library, with their keys and item counts. Use a returned collectionKey as the collection argument of zotero_search to scope a search. Requires Zotero 7+ (tested on 9.x) running locally with "Allow other applications on this computer" enabled.',
+      'List the collections (folders) of the Zotero library, with their keys and item counts. Use a returned collectionKey as the collection argument of zotero_search to scope a search. Requires Zotero 7+ (tested on Zotero 10.0.3) running locally with "Allow other applications on this computer" enabled.',
     parameters: {
       type: 'object',
       properties: {},

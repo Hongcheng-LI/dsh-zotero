@@ -1,9 +1,11 @@
 {
   "name": "dsh-zotero",
   "description": "Zotero library tools for DeepSeek Harness: search, read metadata and fulltext, manage notes, download PDFs via the Zotero local API",
-  "version": "0.1.0",
+  "version": "0.1.3",
   "entry": {
     "name": "dsh-zotero",
-    "inject": []
+    "inject": [
+      "tools"
+    ]
   }
 }

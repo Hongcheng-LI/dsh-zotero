@@ -8,12 +8,18 @@ DeepSeek Harness 的 Zotero 工具插件：让 agent 直接**检索你的 Zotero
 
 > **独立仓库**：本仓库是 dsh-zotero 的唯一正本（曾作为 dsh-scientific monorepo 的 `plugins/zotero`，2026-08 拆分独立）。配套的 skills / workflows 仍在 [dsh-scientific](https://github.com/Hongcheng-LI/dsh-scientific)。
 
+## DSH 兼容性
+
+当前 `0.1.3` 已按 DSH 0.2 工具插件接口复核（基线：`@deepseek-ai/dsh@0.2.0-rc.1`）。9 个 Zotero 工具继续使用官方支持的 `inject = ['tools']`、`ctx.tools.register(...)`、`output.schema/output.render` 和 `execute(args, exec)` 接口，无需重写。
+
+从 GitHub 安装时，本仓库直接提交 `lib/` 构建产物，因此安装不再依赖 Git 依赖的 `prepare` 构建脚本，可避开 pnpm 10 对 Git build script 的限制。`dsh.plugin.json` 仅保留给旧工具读取；DSH 0.2 的安装/启用以 `package.json` 中的 `dsh.bundle` 和 `cordis.patch.yml` 为准。详细审计见 `DSH-0.2-COMPAT.md`。
+
 ## 前置条件
 
-1. 本机安装并运行 **Zotero 7 及以上**（本地 API 自 7 代引入；本项目在 **Zotero 9.0.6 / Windows** 上实测通过）；
+1. 本机安装并运行 **Zotero 7 及以上**（本地 API 自 7 代引入；本项目在 **Zotero 10.0.3 / Windows** 上实测通过）；
 2. 打开 Zotero：**设置 → 高级 → 通用 → 勾选「允许本机上的其他应用程序与 Zotero 通信」**。
 
-> 兼容性说明：读取类工具（检索/条目/全文/附件路径/笔记读取）在 Zotero 9 上全部实测通过。笔记**写入**（create/append/update/delete）受本地 API 只读限制不可用（见工具表说明）。
+> 兼容性说明：读取类工具（检索/条目/全文/附件路径/笔记读取）在 Zotero 10.0.3 上实测通过。笔记**写入**（create/append/update/delete）受本地 API 只读限制不可用（见工具表说明）。
 
 ## 工具一览
 
@@ -32,6 +38,23 @@ DeepSeek Harness 的 Zotero 工具插件：让 agent 直接**检索你的 Zotero
 示例对话：
 
 > 在我的 Zotero 里搜一下 transformer 相关的论文，挑 2020 年以后的，把第一篇的全文读一遍，给我写个摘要存进笔记。
+
+
+### 0.1.3 修复
+
+- 修复 Zotero 10.0.3 本地 API 不识别 `itemType=-attachment -note` 的问题：默认检索改为服务端单值排除 `attachment`，客户端继续排除 `note`，并自动翻页补足 `limit`。
+- `zotero_recent` 与 collection 限定检索复用同一过滤流程，不再混入附件或笔记。
+- storage 自动探测优先支持 Zotero 7+ 的 `<profile>/storage`，并保留旧的 `<profile>/zotero/storage` 兼容。
+- Zotero 10 返回 HTTP 428 `Zotero-Server-ID not provided` 时，笔记写操作转换为明确的只读提示；空 `statusText` 不再显示为 `undefined`。
+- 发布包现在包含 `skills/paper-reading/SKILL.md`。
+
+### 0.1.2 修复
+
+- 修复 DSH Remote JSON 校验失败：返回对象不再包含嵌套 `undefined`。
+- `zotero_collections` 支持完整分页，并正确保留顶层分类的 `parentCollection: false`。
+- `zotero_search` 在使用 collection 前先校验 collectionKey，避免无效 key 被 Zotero 10 本地 API 静默当作全库。
+- 默认检索在服务端排除 attachment/note；年份过滤会连续分页直到取够 `limit`，并在过滤后应用 `offset`。
+- 条目子附件/笔记列表支持超过 100 条时继续分页。
 
 ## 安装
 
@@ -58,7 +81,7 @@ dsh plugin --profile web add github:<你的账号>/dsh-zotero#<commit>
     library: user                      # user（我的文献库）或 group:<群组ID>
     downloadDir: D:/papers             # 附件下载目录，缺省存到会话工作区
     dataDir: D:/ZoteroData             # Zotero 数据目录（含 profiles.ini），默认自动探测
-    storageDir: .../zotero/storage     # 直接指定 storage 目录（zotero_fulltext / attachment_path 用）
+    storageDir: .../storage     # 直接指定 storage 目录（zotero_fulltext / attachment_path 用）
     maxAttachmentBytes: 67108864       # 单附件下载上限，默认 64MB
     maxFulltextChars: 80000            # zotero_fulltext 返回的最大字符数，默认 80000
     maxLimit: 50                       # 检索结果条数上限，默认 50
@@ -75,7 +98,7 @@ npm test          # 构建单元测试（离线，不需要 Zotero）
 npm run test:smoke # 真实环境冒烟测试：对本机 Zotero 完整跑一遍工具链
 ```
 
-冒烟测试覆盖 `zotero_recent → zotero_item → zotero_search → zotero_fulltext → zotero_attachment_path → 笔记 create/append/update/delete` 全链路，需要 Zotero 7+（实测 9.0.6）在线（不可达时自动 skip，不报错）。笔记测试会创建并清理自己的笔记，附件下载进系统临时目录，不会污染你的文献库和工作区；如果当前 Zotero 版本的本地 API 不支持 PATCH/DELETE 写操作，会以 skip/diagnostic 形式明确报告而不是误报失败。指定 API 地址：`ZOTERO_SMOKE=1 ZOTERO_BASE_URL=http://127.0.0.1:23119 node --test test/smoke.mjs`。
+冒烟测试覆盖 `zotero_recent → zotero_item → zotero_search → zotero_fulltext → zotero_attachment_path → 笔记 create/append/update/delete` 全链路，需要 Zotero 7+（实测 10.0.3）在线（不可达时自动 skip，不报错）。笔记测试会创建并清理自己的笔记，附件下载进系统临时目录，不会污染你的文献库和工作区；如果当前 Zotero 版本的本地 API 不支持 PATCH/DELETE 写操作，会以 skip/diagnostic 形式明确报告而不是误报失败。指定 API 地址：`ZOTERO_SMOKE=1 ZOTERO_BASE_URL=http://127.0.0.1:23119 node --test test/smoke.mjs`。
 
 结构遵循 DSH 插件规范：`dsh.plugin.json` 元信息、`cordis.patch.yml` 运行时注入行、`src/` 源码、`lib/` 构建产物。
 
@@ -85,7 +108,7 @@ npm run test:smoke # 真实环境冒烟测试：对本机 Zotero 完整跑一遍
 
 Zotero tools for DeepSeek Harness: search your library, read item metadata and abstracts, list collections and PDF attachments, download PDFs into the session workspace, and attach notes — all through the Zotero local API (no API key needed).
 
-Requires Zotero 7+ (tested on 9.0.6 / Windows) running locally with "Allow other applications on this computer" enabled in Settings → Advanced.
+Requires Zotero 7+ (tested on 10.0.3 / Windows) running locally with "Allow other applications on this computer" enabled in Settings → Advanced.
 
 | Tool | What it does |
 |---|---|
