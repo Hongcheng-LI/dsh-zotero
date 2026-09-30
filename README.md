@@ -10,16 +10,16 @@ DeepSeek Harness 的 Zotero 工具插件：让 agent 直接**检索你的 Zotero
 
 ## DSH 兼容性
 
-当前 `0.1.3` 已按 DSH 0.2 工具插件接口复核（基线：`@deepseek-ai/dsh@0.2.0-rc.1`）。9 个 Zotero 工具继续使用官方支持的 `inject = ['tools']`、`ctx.tools.register(...)`、`output.schema/output.render` 和 `execute(args, exec)` 接口，无需重写。
+当前 `0.1.4` 的 9 个 Zotero 工具沿用官方接口 `inject = ['tools']`、`ctx.tools.register(...)`、`output.schema/output.render` 和 `execute(args, exec)`，无需重写；复核基线为 `@deepseek-ai/dsh@0.2.0-rc.1`（复核在 `0.1.3` 代码上完成，`0.1.4` 未改动这些接口）。`0.1.4` 新增的随包 skill 自注册（`ctx.skills`）不在该范围内，skills 服务缺失或同名重复时静默降级，不影响这 9 个工具加载。
 
-从 GitHub 安装时，本仓库直接提交 `lib/` 构建产物，因此安装不再依赖 Git 依赖的 `prepare` 构建脚本，可避开 pnpm 10 对 Git build script 的限制。`dsh.plugin.json` 仅保留给旧工具读取；DSH 0.2 的安装/启用以 `package.json` 中的 `dsh.bundle` 和 `cordis.patch.yml` 为准。详细审计见 `DSH-0.2-COMPAT.md`。
+从 GitHub 安装时，本仓库直接提交 `lib/` 构建产物，因此安装不再依赖 Git 依赖的 `prepare` 构建脚本，可避开 pnpm 10 对 Git build script 的限制。`dsh.plugin.json` 仅保留给旧工具读取；DSH 0.2 的安装/启用以 `package.json` 中的 `dsh.bundle` 和 `cordis.patch.yml` 为准。
 
 ## 前置条件
 
 1. 本机安装并运行 **Zotero 7 及以上**（本地 API 自 7 代引入；本项目在 **Zotero 10.0.3 / Windows** 上实测通过）；
 2. 打开 Zotero：**设置 → 高级 → 通用 → 勾选「允许本机上的其他应用程序与 Zotero 通信」**。
 
-> 兼容性说明：读取类工具（检索/条目/全文/附件路径/笔记读取）在 Zotero 10.0.3 上实测通过。笔记**写入**（create/append/update/delete）受本地 API 只读限制不可用（见工具表说明）。
+> 兼容性说明：读取类工具（检索/条目/全文/附件路径/笔记读取）在 Zotero 10.0.3 上实测通过。笔记**写入**（create/append/update/delete）默认关闭（`writeEnabled: false`）；Zotero 本地 API 并非只读——写入可用，但要求 `Zotero-Server-ID` 匹配并完成一次本地授权（`POST /api/local/authorize`）换取 API key，插件不代你执行该握手（见工具表与 `writeEnabled`/`apiKey` 配置）。
 
 ## 工具一览
 
@@ -46,7 +46,7 @@ DeepSeek Harness 的 Zotero 工具插件：让 agent 直接**检索你的 Zotero
 
 - `writeEnabled` 不再是无效配置：默认 `false` 时写工具在**发起任何请求前**就拒绝，并解释开启路径；设为 `true` 时写请求会带上 `Zotero-Server-ID`（从 `GET /api/` 公开读取）与配置的 `apiKey`（`Zotero-API-Key` 头）。
 - 写失败按 Zotero 的真实状态码归因，不再笼统说「服务器只读」：`401` → 需要本地授权（`POST /api/local/authorize` 换 API key，填入 `apiKey`）；`412` → Server-ID 与实例不匹配；`428` → 未取到 Server-ID；只有 `405/501/400` 才表示端点确实不支持写入。
-- `zotero_search` 的 `totalResults` 口径修正：默认检索会用三次 `limit=1` 计数（全部 − 附件 − 笔记）算出**真正可翻页的条目数**（新增 `totalResultsKind: visible`）；带年份过滤时无法精确计数，标注为 `server-approximate` 并在渲染文案里说明「含已过滤的附件/笔记」，不再把服务器计数当成可翻页条数。
+- `zotero_search` 的 `totalResults` 口径修正：不再把服务器匹配数当成可翻页条目数。Zotero 10 的 `itemType=-attachment` 会**同时排除附件与标注（annotation）、却保留笔记**（实测全库 13169 = 顶层 4938 + 笔记 1541 + 附件 4662 + 标注 2028），因此既不能用原始计数（6479），也不能用「全部 − 附件 − 笔记」（6966，多算了 2028 条标注）。插件改用四个 `limit=1` 计数推算，并在服务器忽略负向参数时自动切换算法；结果通过 `totalResultsKind: visible | server-approximate` 暴露，带年份过滤时标注 `server-approximate` 并在渲染文案里说明口径。
 - 随包 `skills/paper-reading` 现在真正生效：插件按 `dsh-skill-office` 的方式向 `ctx.skills` 注册自带 provider（rank 600），不再需要在 `customSkillDirs` 里额外配置；注册表缺失或重复注册时静默降级，不影响加载。
 
 ### 0.1.3 修复
@@ -54,7 +54,7 @@ DeepSeek Harness 的 Zotero 工具插件：让 agent 直接**检索你的 Zotero
 - 修复 Zotero 10.0.3 本地 API 不识别 `itemType=-attachment -note` 的问题：默认检索改为服务端单值排除 `attachment`，客户端继续排除 `note`，并自动翻页补足 `limit`。
 - `zotero_recent` 与 collection 限定检索复用同一过滤流程，不再混入附件或笔记。
 - storage 自动探测优先支持 Zotero 7+ 的 `<profile>/storage`，并保留旧的 `<profile>/zotero/storage` 兼容。
-- Zotero 10 返回 HTTP 428 `Zotero-Server-ID not provided` 时，笔记写操作转换为明确的只读提示；空 `statusText` 不再显示为 `undefined`。
+- Zotero 10 返回 HTTP 428 `Zotero-Server-ID not provided` 时，笔记写操作转换为明确的提示（0.1.4 起改为按 HTTP 状态码归因，见上）；空 `statusText` 不再显示为 `undefined`。
 - 发布包现在包含 `skills/paper-reading/SKILL.md`。
 
 ### 0.1.2 修复
@@ -64,6 +64,13 @@ DeepSeek Harness 的 Zotero 工具插件：让 agent 直接**检索你的 Zotero
 - `zotero_search` 在使用 collection 前先校验 collectionKey，避免无效 key 被 Zotero 10 本地 API 静默当作全库。
 - 默认检索在服务端排除 attachment/note；年份过滤会连续分页直到取够 `limit`，并在过滤后应用 `offset`。
 - 条目子附件/笔记列表支持超过 100 条时继续分页。
+
+### 0.1.1 修复
+
+- 把 `lib/` 构建产物纳入版本库（`.gitignore` 去掉 `lib/`），从 GitHub / profile 安装不再依赖构建步骤。
+- 移除 `prepare` 脚本；发布仍由 `prepack` 重新构建。
+- `dsh.plugin.json`（供旧工具读取）与运行时导出的 `inject: ["tools"]` 保持同步；DSH 激活以 `package.json` 的 `dsh.bundle.patch` + `cordis.patch.yml` 为准。
+- 新增包布局测试 `test/package.test.mjs`，防止以后重新引入 Git 安装时的构建依赖。
 
 ## 安装
 
