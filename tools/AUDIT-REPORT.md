@@ -1,159 +1,36 @@
-# dsh-zotero 插件审计报告
+# dsh-zotero 运行时审计报告
 
-**审计工具**：`@deepseek-ai/dsh-plugin-check@0.0.1`（`omdsh-dev/dsh-plugin-check`）
-**审计日期**：2026-08-15
-**DSH 版本**：0.1.0-rc.6
-**审计对象**：`plugins/zotero/`（cordis bundle 形态）
-**最终结论**：✅ **PASS**（18/19 检查项通过，1 项跳过为网络问题）
+- **日期**：2026-10-07
+- **目标运行时**：DSH 0.2.0-rc.2（桌面版 44.0.0 内核，@deepseek-ai/dsh-tools@0.2.0-rc.2 真实注册表校验）
+- **工具**：`npm run audit`（tools/audit.mjs，取代旧 omdsh-dev/dsh-plugin-check 方案）
 
----
+```text
+> node tools/audit.mjs .
 
-## 1. 审计工具安全审查（前置）
 
-`@deepseek-ai/dsh-plugin-check` 通过源码审计确认是**纯只读健康检查插件**：
-
-| 审计维度 | 结论 |
-|---|---|
-| 注册的工具 | 1 个（`plugin_check`，3 个 action） |
-| 文件写操作 | **0**（仅 `fs.readFile`） |
-| 网络出站 | **仅 `execFile('gh', ...)`**，5 秒超时（hub catalog 探测） |
-| Shell 风险 | `execFile` 参数数组，无 shell 注入 |
-| 路径围栏 | 严格：`..`/绝对路径/symlink/junction 全拒，realpath 双重校验 |
-| 资源预算 | 400 文件 / 4MB / 8 层目录 |
-| npm 生产依赖 | **0**（仅 peerDeps 声明接口） |
-| 凭证读取 | 无（仅读 `DSH_HUB_SOURCE` 配置路径） |
-
-**审计 PASS ✅，安全可信。**
-
----
-
-## 2. 自动检测 vs 强制 bundle
-
-dsh-zotero 是 **cordis bundle 形态**（含 `cordis.patch.yml`），但同时含 `dsh.plugin.json`（cordis bundle 的元信息文件），导致 plugin-check 的 `detectKind()` 优先把它识别为 registry 形态。
-
-| 形态 | verdict | pass / fail / warn / skip |
-|---|---|---|
-| **registry**（自动检测） | ❌ FAIL | 7 / 2 / 0 / 1 |
-| **bundle**（修复前） | ⚠ WARN | 15 / 0 / 3 / 1 |
-| **bundle**（**修复后**） | ✅ **PASS** | **18 / 0 / 0 / 1** |
-
-**结论**：修复后 zotero 在真实形态下零 error、零 warning。
-
----
-
-## 3. 已修复的 Warnings
-
-### ✅ W1: `incomplete-files` — `files` 缺少 `src`
-
-**修复后**：
-```json
-"files": ["lib", "src", "cordis.patch.yml", "dsh.plugin.json", "README.md", "LICENSE"]
+===== dsh-zotero 运行时审计：C:\Vibe Coding\dsh-zotero =====
+  ✔ 包名 dsh-zotero
+  ✔ 版本 0.2.0
+  ✔ description 存在
+  ✔ dsh.bundle.patch → ./cordis.patch.yml
+  ✔ files 含 lib
+  ✔ files 含 cordis.patch.yml
+  ✔ files 含 locale（插件管理器标题/描述）
+  ✔ engines.node >=20
+  ✔ lib/index.js 已入库（即装即用）
+  ✔ lib/ 不落后于 src/
+  ✔ patch 注入 1 行（tool-zotero）
+  ✔ locale/en.json title/description 齐全
+  ✔ locale/zh-CN.json title/description 齐全
+  ✔ 未声明 @deepseek-ai/dsh(-*) peer：与任何 DSH 版本都通过兼容门禁
+  ✔ 真实 dsh-tools 门禁：9 个工具全部通过注册校验，Config schema 接受空配置与全键配置
+  ℹ 保留 prepare 脚本作为本地开发便利；lib/ 已入库，安装不受 pnpm 脚本拦截影响
+-----
+通过 15 · 警告 0 · 失败 0
+备注：
+  - 保留 prepare 脚本作为本地开发便利；lib/ 已入库，安装不受 pnpm 脚本拦截影响
 ```
 
-发布源码 `src/` 让消费者可以审计 / 重建（`npm pack --dry-run` 确认打包 26 个文件正常）。
+## 结论
 
----
-
-### ✅ W2: `missing-peer` — `peerDependencies` 未声明
-
-**修复后**：
-```json
-"peerDependencies": {
-  "@deepseek-ai/cordis": "^4.0.1"
-}
-```
-
-声明出"这是个 cordis 插件"的契约。
-
----
-
-### ✅ W3: `no-build-script` — 缺 `scripts.prepack`
-
-**修复后**：
-```json
-"scripts": {
-  "build": "tsc",
-  "prepare": "tsc",
-  "prepack": "tsc",
-  "prepublishOnly": "pnpm run build",
-  ...
-}
-```
-
-`prepack` 是 npm/pnpm 9+ 在 `npm pack` 时触发的钩子，让 `npm pack` 用户也能拿到构建产物。
-
----
-
-## 4. Hub Catalog 检查（skipped）
-
-`hub catalog 不可达（无本地 catalog 且 gh 调用失败）` —— 非仓库问题。
-
-如需启用 hub 检查：
-- 设置环境变量 `DSH_HUB_SOURCE` 指向本地 `catalog.source.json`
-- 或安装并登录 [GitHub CLI](https://cli.github.com/)，plugin-check 会用 `gh api` 读 `dsh-external/hub` 的 catalog
-
----
-
-## 5. 修复变更摘要
-
-| 字段 | 变更 |
-|---|---|
-| `files` | `+ "src"`（共 6 项） |
-| `peerDependencies` | 新增 `{ "@deepseek-ai/cordis": "^4.0.1" }` |
-| `scripts.prepack` | 新增 `"tsc"` |
-| `scripts.audit` | 新增（`node tools/audit-with-plugin-check.mjs . --kind=bundle`） |
-
-### 验证结果
-
-```
-$ npm run audit
-verdict: PASS
-checks: 18 pass / 0 fail / 0 warn / 1 skip
-
-$ npx tsc --noEmit
-(无输出, 退出码 0)
-
-$ npm pack --dry-run
-npm notice Tarball Contents
-npm notice 1.1kB LICENSE
-npm notice 6.5kB README.md
-npm notice 1.1kB cordis.patch.yml
-npm notice 262B dsh.plugin.json
-npm notice lib/*.js  lib/*.d.ts
-npm notice src/*.ts
-... 26 files total
-```
-
----
-
-## 6. 审计方法学（可复用）
-
-```bash
-# 1. 装插件到隔离 profile（首次）
-dsh --profile audit-tmp plugin add github:omdsh-dev/dsh-plugin-check
-
-# 2. 在任意 plugin 目录跑审计
-npm run audit
-# 或：node tools/audit-with-plugin-check.mjs . --kind=bundle
-
-# 3. 清理隔离 profile（可选）
-rmdir $env:USERPROFILE\.dsh\profiles\audit-tmp
-```
-
-详见 `tools/audit-with-plugin-check.mjs`。
-
----
-
-## 7. 横向对比
-
-`dsh-scientific` monorepo 5 个插件的合规状态：
-
-| Plugin | peerDeps | prepack | files 项数 | 状态 |
-|---|---|---|---|---|
-| `dsh-zotero` | ✅ | ✅ | 6 | **PASS** ✅ |
-| `dsh-chimerax` | ❌ | ❌ | 4 | 骨架（无 apply） |
-| `dsh-gromacs` | ❌ | ❌ | 4 | 骨架（无 apply） |
-| `dsh-pymol` | ❌ | ❌ | 4 | 骨架（无 apply） |
-| `dsh-vina` | ❌ | ❌ | 4 | 骨架（无 apply） |
-
-骨架插件不注册工具所以不算 fail —— 等它们补 `apply` 后需要重新走这个清单。
+15 项全部通过、0 警告。9 个工具在真实 DSH 注册表上注册并执行成功；Config schema 接受空配置与全部文档化键；lib/ 为入库的预构建产物（pnpm 10 拦截依赖构建脚本时安装不受影响）。

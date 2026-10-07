@@ -23,7 +23,8 @@ import type {
 
 export const name = 'tool-zotero'
 export const inject = ['tools']
-export type Config = ZoteroConfig
+/** schemastery 配置 schema：加载器校验 config 并渲染设置表单（DSH 0.2.0-rc.x 插件规范）。 */
+export { Config } from './config.js'
 
 const MAX_LIMIT = 100
 const KEY_PATTERN = /^[A-Z0-9]{8}$/i
@@ -157,7 +158,7 @@ function renderAttachmentPath(value: ZoteroAttachmentPathResult): TextBlock[] {
   return oneText(`无法解析附件 ${value.attachmentKey} 的本地路径（storage 目录未找到或文件不在预期位置）。可在 cordis.patch.yml 配置 storageDir / dataDir，或改用 zotero_download。`)
 }
 
-export function apply(ctx: any, config: Config = {}): void {
+export function apply(ctx: any, config: ZoteroConfig = {}): void {
   const resolved = resolveConfig(config)
   const client = new ZoteroClient(resolved)
   const storageDir = resolveStorageDir({ dataDir: resolved.dataDir, storageDir: resolved.storageDir })

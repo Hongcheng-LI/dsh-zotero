@@ -6,7 +6,7 @@
 
 DeepSeek Harness 的 Zotero 工具插件：让 agent 直接**检索你的 Zotero 文献库、阅读条目元数据与摘要、列出分类和 PDF 附件、读 PDF 全文、代写读书笔记**。通过 Zotero 本地 API（7 代及以上可用，实测 9.x；`http://127.0.0.1:23119`）访问，无需 API Key，纯 Node 实现，零核心改动。
 
-> **独立仓库**：本仓库是 dsh-zotero 的唯一正本（曾作为 dsh-scientific monorepo 的 `plugins/zotero`，2026-08 拆分独立）。配套的 skills / workflows 仍在 [dsh-scientific](https://github.com/Hongcheng-LI/dsh-scientific)。
+> **兼容版本**：按 **DSH 运行时 0.2.0-rc.x**（桌面版 44.x 内核）的插件规范更新——schemastery `Config` 配置校验与设置表单、`locale/` 插件管理器元信息、预构建 `lib/` 直装、`dsh.plugin.json` 已按新规范移除（新运行时不读取该文件）。插件本体不声明任何 `@deepseek-ai/dsh-*` peer，能通过所有版本的兼容门禁；并用真实 `@deepseek-ai/dsh-tools` 注册表做契约测试（见「开发」）。
 
 ## 前置条件
 
@@ -35,21 +35,27 @@ DeepSeek Harness 的 Zotero 工具插件：让 agent 直接**检索你的 Zotero
 
 ## 安装
 
-```sh
-dsh plugin --profile web add dsh-zotero
+**方式一：GUI 插件管理器**（桌面版 44.x）——设置 → 插件 → 安装，填入仓库地址：
+
+```
+github:Hongcheng-LI/dsh-zotero
 ```
 
-或从 GitHub 安装：
+**方式二：CLI**（web / desktop profile 均可）：
 
 ```sh
-dsh plugin --profile web add github:<你的账号>/dsh-zotero#<commit>
+dsh plugin add github:Hongcheng-LI/dsh-zotero           # 当前 profile
+dsh plugin --profile web add github:Hongcheng-LI/dsh-zotero
 ```
 
-装好后重启 `dsh web`。插件自带空配置，不会弄崩启动；Zotero 未运行时工具会返回明确的连接提示。
+装好后重启 DSH。仓库自带**预构建的 `lib/`**，安装全程不需要跑构建脚本（pnpm 10 默认拦截依赖的 `prepare`，本插件不受影响）；插件自带空配置，不会弄崩启动；Zotero 未运行时工具会返回明确的连接提示。
 
 ## 配置（可选）
 
-默认配置即可用（本地库、端口 23119）。如需自定义，在你的 profile（`$DSH_HOME/profiles/<name>/`）的 `cordis.patch.yml` 里覆盖 `tool-zotero` 行，然后重启：
+默认配置即可用（本地库、端口 23119）。插件导出了 schemastery `Config` schema：
+
+- **GUI**：插件管理器 → dsh-zotero → 配置，直接用表单改（中英双语描述）；
+- **cordis.patch.yml**：在你的 profile（`$DSH_HOME/profiles/<name>/`）里覆盖 `tool-zotero` 行，然后重启：
 
 ```yaml
 - id: tool-zotero
@@ -65,25 +71,37 @@ dsh plugin --profile web add github:<你的账号>/dsh-zotero#<commit>
     timeoutMs: 15000                   # 本地 API 超时（毫秒）
 ```
 
+非法配置（比如 `library: abc`）会在**加载期**被 Config schema 拒绝并明确报错，而不是等到调用才失败。
+
 全文与附件路径：插件通过本地 API `/file` 端点的 302 重定向拿到附件的真实磁盘路径（自定义数据目录也能自动识别，无需配置），全文优先读 Zotero 自己维护的 `.zotero-ft-cache` 缓存（与附件同目录）。`dataDir`/`storageDir` 配置仅在重定向不可用时作为兜底。
 
 ## 开发
 
 ```sh
 npm install
-npm test          # 构建单元测试（离线，不需要 Zotero）
+npm test           # 构建单元测试（离线，不需要 Zotero）
+npm run audit      # 运行时审计：清单 / patch / 构建产物 / locale / 兼容门禁
 npm run test:smoke # 真实环境冒烟测试：对本机 Zotero 完整跑一遍工具链
 ```
 
-冒烟测试覆盖 `zotero_recent → zotero_item → zotero_search → zotero_fulltext → zotero_attachment_path → 笔记 create/append/update/delete` 全链路，需要 Zotero 7+（实测 9.0.6）在线（不可达时自动 skip，不报错）。笔记测试会创建并清理自己的笔记，附件下载进系统临时目录，不会污染你的文献库和工作区；如果当前 Zotero 版本的本地 API 不支持 PATCH/DELETE 写操作，会以 skip/diagnostic 形式明确报告而不是误报失败。指定 API 地址：`ZOTERO_SMOKE=1 ZOTERO_BASE_URL=http://127.0.0.1:23119 node --test test/smoke.mjs`。
+**运行时契约测试（可选但推荐）**：`test/registry-contract.test.mjs` 会用**真实**的 DSH 工具注册表注册全部 9 个工具，并跑一遍 execute → output schema 校验 → render 管线（mock 的 Zotero 本地 API，离线可跑）。`@deepseek-ai/dsh-tools` 刻意不出现在 package.json（插件对 DSH 零运行时依赖），想跑契约测试时装一份与目标运行时一致的版本即可，不装则自动跳过：
 
-结构遵循 DSH 插件规范：`dsh.plugin.json` 元信息、`cordis.patch.yml` 运行时注入行、`src/` 源码、`lib/` 构建产物。
+```sh
+npm install --no-save @deepseek-ai/dsh-tools@0.2.0-rc.2
+npm test
+```
+
+**`lib/` 是入库的**：DSH 的插件安装走 pnpm，pnpm 10 默认拦截依赖包的构建脚本（`prepare` 里的 tsc 不会执行），所以仓库必须自带构建产物。改动 `src/` 后先 `npm run build`，把刷新后的 `lib/` 一起提交。
+
+结构遵循 DSH 插件规范（0.2.0-rc.x）：`package.json` 的 `dsh.bundle.patch` 声明、`cordis.patch.yml` 运行时注入行、schemastery `Config` 配置 schema、`locale/` 插件管理器元信息、`src/` 源码、`lib/` 构建产物。
 
 ---
 
 <a name="english"></a>
 
-Zotero tools for DeepSeek Harness: search your library, read item metadata and abstracts, list collections and PDF attachments, download PDFs into the session workspace, and attach notes — all through the Zotero local API (no API key needed).
+Zotero tools for DeepSeek Harness: search your library, read item metadata and abstracts, list collections and PDF attachments, read full text, download PDFs into the session workspace, and attach notes — all through the Zotero local API (no API key needed).
+
+> **Compatibility**: updated for the **DSH 0.2.0-rc.x plugin contract** (desktop 44.x core) — schemastery `Config` (validated config + settings form), `locale/` metadata for the plugin manager, prebuilt `lib/` shipped in-repo (pnpm 10 blocks dependency build scripts), `dsh.plugin.json` removed per the current spec. The plugin declares no `@deepseek-ai/dsh-*` peers, so it passes the version-compatibility gate on every DSH release; a contract test runs every tool through the real `@deepseek-ai/dsh-tools` registry.
 
 Requires Zotero 7+ (tested on 9.0.6 / Windows) running locally with "Allow other applications on this computer" enabled in Settings → Advanced.
 
@@ -99,7 +117,9 @@ Requires Zotero 7+ (tested on 9.0.6 / Windows) running locally with "Allow other
 | `zotero_notes` | List an item's child notes or search notes library-wide |
 | `zotero_note` | Create / append / update / delete notes |
 
-Install: `dsh plugin --profile web add dsh-zotero`, then restart `dsh web`. Optional config (`baseUrl`, `library`, `downloadDir`, `maxAttachmentBytes`, `maxLimit`, `timeoutMs`) goes under the `tool-zotero` row of your profile's `cordis.patch.yml`.
+Install: `dsh plugin add github:Hongcheng-LI/dsh-zotero` (or via the desktop plugin manager), then restart DSH. Optional config (`baseUrl`, `library`, `downloadDir`, `maxAttachmentBytes`, `maxLimit`, `timeoutMs`, …) is available both as a settings form (schemastery `Config`) and under the `tool-zotero` row of your profile's `cordis.patch.yml`.
+
+Development: `npm install && npm test` (offline unit tests), `npm run audit` (runtime audit), `npm run test:smoke` (live Zotero). Opt-in contract test against the real DSH registry: `npm install --no-save @deepseek-ai/dsh-tools@0.2.0-rc.2 && npm test`. `lib/` is committed on purpose — pnpm 10 does not run dependency `prepare` scripts during plugin installs.
 
 ## License
 

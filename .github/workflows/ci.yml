@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      # 与目标 DSH 运行时一致的注册表，用于 test/registry-contract.test.mjs（--no-save，不进 package.json）
+      - name: Install DSH runtime contract tools
+        run: npm install --no-save --no-audit --no-fund @deepseek-ai/dsh-tools@0.2.0-rc.2
+
+      - name: Build
+        run: npm run build
+
+      - name: Unit + runtime contract tests
+        run: npm test
+
+      - name: Runtime audit
+        run: npm run audit
+
+      - name: lib/ must be committed and fresh
+        run: |
+          git diff --exit-code -- lib || (echo "::error::lib/ 与 src/ 不一致：先 npm run build 再提交"; exit 1)
+          git diff --stat --exit-code || true

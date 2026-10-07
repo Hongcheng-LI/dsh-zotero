@@ -1,0 +1,4 @@
+{
+  "title": "Zotero 文献库",
+  "description": "通过 Zotero 本地 API 检索文献库、读取条目元数据与全文、解析附件路径、下载 PDF 并管理笔记。"
+}
