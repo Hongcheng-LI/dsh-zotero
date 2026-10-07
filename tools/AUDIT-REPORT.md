@@ -1,6 +1,6 @@
 ﻿# dsh-zotero 运行时审计报告
 
-- **日期**：2026-10-07（0.2.1 修订：移除 prepare 生命周期脚本）
+- **日期**：2026-10-07（0.2.2 修订：检索与最近条目改用 /items/top 顶层端点）
 - **目标运行时**：DSH 0.2.0-rc.2（桌面版 44.0.0 内核，@deepseek-ai/dsh-tools@0.2.0-rc.2 真实注册表校验）
 - **工具**：`npm run audit`（tools/audit.mjs，取代旧 omdsh-dev/dsh-plugin-check 方案）
 
@@ -10,7 +10,7 @@
 
 ===== dsh-zotero 运行时审计：C:\Vibe Coding\dsh-zotero =====
   ✔ 包名 dsh-zotero
-  ✔ 版本 0.2.1
+  ✔ 版本 0.2.2
   ✔ description 存在
   ✔ dsh.bundle.patch → ./cordis.patch.yml
   ✔ files 含 lib
@@ -31,4 +31,8 @@
 
 ## 结论
 
-16 项全部通过、0 警告。9 个工具在真实 DSH 注册表上注册并执行成功；Config schema 接受空配置与全部文档化键；lib/ 为入库的预构建产物；**不声明任何生命周期脚本**——pnpm 10 对声明 prepare 的 git 依赖会硬性拒装（ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED，实测于桌面 profile 安装），移除后可免白名单直装。
+16 项全部通过、0 警告。9 个工具在真实 DSH 注册表上注册并执行成功；Config schema 接受空配置与全部文档化键；lib/ 为入库的预构建产物；不声明任何生命周期脚本（pnpm 10 免白名单直装）。
+
+## 0.2.2 修订说明
+
+实测 Zotero 本地 API（9.0.6）对否定 itemType 语法（`-attachment -note`）解析不可靠：`itemType='-attachment -note'` 实际只排除了批注，2445 个附件仍计入结果与 `Total-Results`。`zotero_search`（未显式指定类型时）与 `zotero_recent` 已改为 `/items/top` 顶层端点，总数与分页恢复正确；契约测试的 mock 增加 `/items/top` 路由防回归。

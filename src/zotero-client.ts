@@ -181,15 +181,21 @@ export class ZoteroClient {
     if (args.sort && args.sort.trim() !== '') params.push(['sort', args.sort.trim()])
     if (args.direction && args.direction.trim() !== '') params.push(['direction', args.direction.trim()])
     if (args.start && args.start > 0) params.push(['start', String(args.start)])
+    // 用户没有显式检索附件/笔记/批注时，走 /items/top 顶层端点：本地 API 对否定
+    // itemType 语法（"-attachment -note"）解析不可靠，只有顶层端点能给出正确的
+    // Total-Results 与分页；显式要附件/笔记时才回到 /items
+    const requestedTypes = (args.itemType ?? '').toLowerCase()
+    const wantsChildren =
+      requestedTypes.includes('attachment') || requestedTypes.includes('note') || requestedTypes.includes('annotation')
+    const autoExclude = !wantsChildren
+    const top = autoExclude ? '/top' : ''
     const base = args.collection && args.collection.trim() !== ''
-      ? `/collections/${encodeURIComponent(args.collection.trim())}/items`
-      : '/items'
+      ? `/collections/${encodeURIComponent(args.collection.trim())}/items${top}`
+      : `/items${top}`
     const response = await this.request(`${base}?${qs(params)}`, { headers: { Accept: 'application/json' } })
     const totalResults = Number(response.headers.get('Total-Results')) || undefined
     const raw = (await response.json()) as RawItem[]
-    // 用户没有显式检索附件/笔记时才自动排除这两类
-    const requestedTypes = (args.itemType ?? '').toLowerCase()
-    const autoExclude = !requestedTypes.includes('attachment') && !requestedTypes.includes('note')
+    // 双保险：服务端之外再过滤一次页面内的附件/笔记
     let items = raw
       .filter((row) => !autoExclude || (row.data?.itemType !== 'attachment' && row.data?.itemType !== 'note'))
       .map(slimItem)
@@ -209,15 +215,20 @@ export class ZoteroClient {
 
   /** 最近添加的条目（不含附件和笔记） */
   async recent(limit: number): Promise<{ items: ZoteroItem[] }> {
+    // 用 /items/top（顶层条目）而不是 /items + 否定 itemType：本地 API 对多词否定
+    // 语法（如 "-attachment -note"）解析不可靠，会把附件混进结果和 Total-Results
     const params = qs([
       ['sort', 'dateAdded'],
       ['direction', 'desc'],
       ['limit', String(limit)],
       ['format', 'json'],
-      ['itemType', '-attachment -note'],
     ])
-    const raw = await this.getJson<RawItem[]>(`/items?${params}`)
-    return { items: raw.map(slimItem) }
+    const raw = await this.getJson<RawItem[]>(`/items/top?${params}`)
+    return {
+      items: raw
+        .filter((row) => row.data?.itemType !== 'attachment' && row.data?.itemType !== 'note')
+        .map(slimItem),
+    }
   }
 
   async item(key: string): Promise<{ item: ZoteroItem; attachments: ZoteroAttachment[]; childNotes: number }> {

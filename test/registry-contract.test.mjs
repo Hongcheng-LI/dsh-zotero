@@ -159,16 +159,19 @@ async function startZoteroMock() {
       return
     }
     if (path === '/api/users/0/collections') return json(res, 200, collections, { 'Total-Results': String(collections.length) })
-    if (path === '/api/users/0/items') {
+    if (path === '/api/users/0/items' || path === '/api/users/0/items/top') {
       const itemType = url.searchParams.get('itemType') ?? ''
       const q = (url.searchParams.get('q') ?? '').toLowerCase()
-      // 支持 Zotero 的包含（"journalArticle"）与排除（"-attachment -note"）语法
+      // 支持 Zotero 的包含（"journalArticle"）与排除（"-attachment -note"）语法；
+      // /top 只回顶层条目（无 parentItem），模拟真实 Zotero 的行为
       const include = itemType.split(/\s+/).filter((tok) => tok !== '' && !tok.startsWith('-'))
       const exclude = [...itemType.matchAll(/-(\w+)/g)].map((m) => m[1])
+      const topOnly = path.endsWith('/top')
       const rows = [...items.values()].filter((it) => {
         const type = it.data.itemType
         if (exclude.includes(type)) return false
         if (include.length > 0 && !include.includes(type)) return false
+        if (topOnly && it.data.parentItem) return false
         if (q !== '') {
           const haystack = `${it.data.title ?? ''} ${it.data.name ?? ''} ${JSON.stringify(it.data.creators ?? [])} ${it.data.date ?? ''}`.toLowerCase()
           if (!haystack.includes(q)) return false
