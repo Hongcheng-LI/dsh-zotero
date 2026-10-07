@@ -1,6 +1,6 @@
 {
   "name": "dsh-zotero",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Zotero tools for DeepSeek Harness: search your library, read item metadata, list collections and attachments, download PDFs and attach notes via the Zotero local API.",
   "type": "module",
   "main": "lib/index.js",
@@ -23,7 +23,6 @@
   ],
   "scripts": {
     "build": "tsc",
-    "prepare": "tsc",
     "prepack": "tsc",
     "prepublishOnly": "pnpm run build",
     "test": "npm run build && node --test \"test/*.test.mjs\"",

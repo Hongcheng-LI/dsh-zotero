@@ -1,7 +1,7 @@
 node_modules/
-# lib/ 是「入库」的：DSH 的插件安装走 pnpm，pnpm 10 默认拦截依赖包的构建脚本
-# （prepare 里的 tsc 不会执行），所以仓库必须自带构建产物，git 安装才能即装即用。
-# 本地开发不受影响：改动 src/ 后跑 npm run build 刷新 lib/，随代码一起提交。
+# lib/ 是「入库」的：pnpm 10 对声明了 prepare 的 git 依赖会硬性拒装
+# （ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED），所以构建产物必须随仓库分发。
+# 本地开发：改动 src/ 后跑 npm run build 刷新 lib/，随代码一起提交。
 *.tgz
 *.log
 .DS_Store

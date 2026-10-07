@@ -70,14 +70,11 @@ if (manifest) {
 
   const scriptNames = Object.keys(manifest.scripts ?? {})
     .filter((name) => ['preinstall', 'install', 'postinstall', 'prepare'].includes(name))
-  if (scriptNames.length === 0) pass('无依赖侧生命周期脚本')
+  if (scriptNames.length === 0) pass('无依赖侧生命周期脚本（pnpm 10 免白名单直装）')
   else {
-    // prepare 允许保留：lib 已入库时它只是本地开发便利；pnpm 会拦截但无影响
-    if (scriptNames.every((name) => name === 'prepare') && existsSync(join(target, 'lib', 'index.js'))) {
-      notes.push(`保留 ${scriptNames.join('/')} 脚本作为本地开发便利；lib/ 已入库，安装不受 pnpm 脚本拦截影响`)
-    } else {
-      warn('lifecycle-scripts', `依赖 ${scriptNames.join('/')} 生成产物 —— pnpm 10 默认拦截依赖构建脚本，安装会静默失败`)
-    }
+    // 实测：pnpm 10 对声明了 prepare 的 git 依赖不是静默跳过，而是硬性拒装
+    // （ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED）。lib/ 必须入库，生命周期脚本必须为空。
+    fail('lifecycle-scripts', `声明了 ${scriptNames.join('/')} —— pnpm 10 会以 ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED 拒绝 git 安装；请把构建产物入库并删除这些脚本`)
   }
 }
 

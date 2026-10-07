@@ -48,7 +48,7 @@ dsh plugin add github:Hongcheng-LI/dsh-zotero           # 当前 profile
 dsh plugin --profile web add github:Hongcheng-LI/dsh-zotero
 ```
 
-装好后重启 DSH。仓库自带**预构建的 `lib/`**，安装全程不需要跑构建脚本（pnpm 10 默认拦截依赖的 `prepare`，本插件不受影响）；插件自带空配置，不会弄崩启动；Zotero 未运行时工具会返回明确的连接提示。
+装好后重启 DSH。仓库自带**预构建的 `lib/`**，且**不声明任何生命周期脚本**——pnpm 10 对声明 `prepare` 的 git 依赖会直接拒装（`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`），本插件零脚本、免白名单直装；插件自带空配置，不会弄崩启动；Zotero 未运行时工具会返回明确的连接提示。
 
 ## 配置（可选）
 
@@ -91,7 +91,7 @@ npm install --no-save @deepseek-ai/dsh-tools@0.2.0-rc.2
 npm test
 ```
 
-**`lib/` 是入库的**：DSH 的插件安装走 pnpm，pnpm 10 默认拦截依赖包的构建脚本（`prepare` 里的 tsc 不会执行），所以仓库必须自带构建产物。改动 `src/` 后先 `npm run build`，把刷新后的 `lib/` 一起提交。
+**`lib/` 是入库的，且没有 `prepare` 脚本**：DSH 的插件安装走 pnpm，pnpm 10 对声明了 `prepare` 的 git 依赖会硬性拒装（不是静默跳过），所以构建产物必须入库、生命周期脚本必须为空。改动 `src/` 后先 `npm run build`，把刷新后的 `lib/` 一起提交。
 
 结构遵循 DSH 插件规范（0.2.0-rc.x）：`package.json` 的 `dsh.bundle.patch` 声明、`cordis.patch.yml` 运行时注入行、schemastery `Config` 配置 schema、`locale/` 插件管理器元信息、`src/` 源码、`lib/` 构建产物。
 
@@ -119,7 +119,7 @@ Requires Zotero 7+ (tested on 9.0.6 / Windows) running locally with "Allow other
 
 Install: `dsh plugin add github:Hongcheng-LI/dsh-zotero` (or via the desktop plugin manager), then restart DSH. Optional config (`baseUrl`, `library`, `downloadDir`, `maxAttachmentBytes`, `maxLimit`, `timeoutMs`, …) is available both as a settings form (schemastery `Config`) and under the `tool-zotero` row of your profile's `cordis.patch.yml`.
 
-Development: `npm install && npm test` (offline unit tests), `npm run audit` (runtime audit), `npm run test:smoke` (live Zotero). Opt-in contract test against the real DSH registry: `npm install --no-save @deepseek-ai/dsh-tools@0.2.0-rc.2 && npm test`. `lib/` is committed on purpose — pnpm 10 does not run dependency `prepare` scripts during plugin installs.
+Development: `npm install && npm test` (offline unit tests), `npm run audit` (runtime audit), `npm run test:smoke` (live Zotero). Opt-in contract test against the real DSH registry: `npm install --no-save @deepseek-ai/dsh-tools@0.2.0-rc.2 && npm test`. `lib/` is committed on purpose and the package declares no lifecycle scripts — pnpm 10 hard-fails git installs of packages that declare `prepare` (`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`).
 
 ## License
 
