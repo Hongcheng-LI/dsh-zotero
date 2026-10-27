@@ -1,0 +1,70 @@
+{
+  "format": 1,
+  "title": {
+    "en": "DeepSeek Harness Community Plugins",
+    "zh": "DeepSeek Harness 社区插件"
+  },
+  "description": {
+    "en": "Community-published plugins for DeepSeek Harness. Add this index URL as a market source to browse and install.",
+    "zh": "社区发布的 DeepSeek Harness 插件。将此索引 URL 添加为市场源即可浏览与安装。"
+  },
+  "metadata": {
+    "categories": {
+      "zotero": {
+        "title": {
+          "en": "Zotero & Reference Management",
+          "zh": "Zotero 与文献管理"
+        }
+      }
+    },
+    "labels": {
+      "local-api": {
+        "title": {
+          "en": "Works offline via local API",
+          "zh": "经本地 API 离线可用"
+        }
+      }
+    }
+  },
+  "plugins": [
+    {
+      "name": "dsh-zotero-local",
+      "title": {
+        "en": "Zotero Tools",
+        "zh": "Zotero 文献工具"
+      },
+      "description": {
+        "en": "Zotero tools for DeepSeek Harness via the Zotero local API (no API key): search your library, read item metadata and abstracts, list collections and attachments, read PDF full text (on-the-fly parsing), download PDFs and manage notes.",
+        "zh": "通过 Zotero 本地 API（无需 API key）为 DeepSeek Harness 提供 Zotero 工具：检索文献库、读取条目元数据与摘要、浏览分类与附件、解析并阅读 PDF 全文、下载 PDF 以及管理笔记。"
+      },
+      "author": "Hongcheng LI",
+      "homepage": "https://github.com/Hongcheng-LI/dsh-zotero",
+      "repository": {
+        "url": "https://github.com/Hongcheng-LI/dsh-zotero"
+      },
+      "metadata": {
+        "category": "zotero",
+        "keywords": [
+          "zotero",
+          "reference",
+          "literature",
+          "pdf",
+          "fulltext",
+          "notes"
+        ],
+        "labels": [
+          "local-api"
+        ]
+      },
+      "versions": [
+        {
+          "version": "0.1.0",
+          "publishTimestamp": 1786808013,
+          "source": {
+            "type": "npm"
+          }
+        }
+      ]
+    }
+  ]
+}
