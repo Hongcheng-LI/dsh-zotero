@@ -1,6 +1,6 @@
 {
   "name": "dsh-zotero-local",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Zotero tools for DeepSeek Harness via the Zotero local API (no API key): search your library, read item metadata and abstracts, list collections and attachments, read PDF full text (on-the-fly parsing), download PDFs and manage notes.",
   "type": "module",
   "main": "lib/index.js",
@@ -41,7 +41,8 @@
   "license": "MIT",
   "packageManager": "pnpm@10.14.0",
   "engines": {
-    "node": ">=20"
+    "node": ">=20",
+    "dsh": ">=0.2.0-rc.1 || >=0.2.1-alpha.0"
   },
   "repository": {
     "type": "git",
