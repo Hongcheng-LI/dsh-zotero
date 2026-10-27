@@ -1,4 +1,4 @@
-import type { ZoteroAttachment, ZoteroCollection, ZoteroConfig, ZoteroItem, ZoteroNote, ResultMode } from './types.js';
+import type { ZoteroAnnotation, ZoteroAttachment, ZoteroCollection, ZoteroConfig, ZoteroItem, ZoteroNote, ResultMode } from './types.js';
 export type ResolvedConfig = {
     baseUrl: string;
     libraryPath: string;
@@ -79,6 +79,26 @@ export declare class ZoteroClient {
     private postNote;
     collections(): Promise<ZoteroCollection[]>;
     attachmentInfo(itemKey: string, attachmentKey: string): Promise<ZoteroAttachment>;
+    /**
+     * 单条目导出为引用格式（BibTeX/RIS/CSL JSON）。
+     * 本地 API 对多 key 的 itemKey= 过滤会静默忽略（实测返回整库），因此
+     * 批量导出必须逐 key 调用本方法后由调用方拼接。
+     */
+    exportItem(key: string, format: 'bibtex' | 'ris' | 'csljson'): Promise<string>;
+    /**
+     * 读取条目附件上的 PDF 批注（高亮/笔记/图像等）。
+     * 本地 API 不在 /items/{key}/children 里返回批注，必须按
+     * itemType=annotation&parentItem=<附件key> 检索（实测有效）。
+     */
+    annotations(itemKey: string, attachmentKey?: string): Promise<ZoteroAnnotation[]>;
+    /** 列出库内用户标签（按 Zotero 默认序） */
+    tags(limit: number): Promise<string[]>;
+    /** 列出保存的智能搜索（key + 名称 + 条件摘要） */
+    savedSearches(limit: number): Promise<Array<{
+        key: string;
+        name: string;
+        conditions?: string;
+    }>>;
     downloadAttachment(attachmentKey: string): Promise<{
         bytes: Uint8Array;
         contentType: string;

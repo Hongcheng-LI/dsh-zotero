@@ -91,6 +91,28 @@ async function startZoteroMock() {
     key: 'NOTE0001', version: 7,
     data: { key: 'NOTE0001', itemType: 'note', parentItem: 'ABCD1234', note: '<p>first note</p>', tags: [], dateAdded: now },
   })
+  // PDF 批注：挂在附件 ATT00001 上（真实 Zotero 也是 parentItem=附件 key）
+  items.set('ANN00001', {
+    key: 'ANN00001', version: 2,
+    data: {
+      key: 'ANN00001', itemType: 'annotation', parentItem: 'ATT00001',
+      annotationType: 'highlight', annotationText: 'attention mechanisms let a model weigh the importance of different parts',
+      annotationComment: '<p>core idea of the paper</p>', annotationColor: '#ffd400',
+      annotationPageLabel: '2', annotationSortIndex: '00002|000001|00000',
+      annotationPosition: JSON.stringify({ pageIndex: 1, rects: [[72, 500, 300, 520]] }),
+      dateModified: now,
+    },
+  })
+  items.set('ANN00002', {
+    key: 'ANN00002', version: 2,
+    data: {
+      key: 'ANN00002', itemType: 'annotation', parentItem: 'ATT00001',
+      annotationType: 'note', annotationComment: '<p>see also the transformer follow-ups</p>',
+      annotationPageLabel: '5', annotationSortIndex: '00005|000001|00000',
+      annotationPosition: JSON.stringify({ pageIndex: 4, rects: [[72, 300, 300, 320]] }),
+      dateModified: now,
+    },
+  })
   const collections = [
     { key: 'COLL0001', version: 2, data: { key: 'COLL0001', name: 'Root', parentCollection: false }, meta: { numItems: 1 } },
     { key: 'COLL0002', version: 2, data: { key: 'COLL0002', name: 'Child', parentCollection: 'COLL0001' }, meta: { numItems: 0 } },
@@ -123,6 +145,18 @@ async function startZoteroMock() {
     if (mItem && req.method === 'GET') {
       const hit = items.get(mItem[1])
       if (!hit) return json(res, 404, { error: 'not found' })
+      // 导出格式：单条目直出纯文本（真实本地 API 的行为）
+      const format = url.searchParams.get('format')
+      if (format && format !== 'json') {
+        const bibtex = {
+          ABCD1234:
+            '@article{vaswani_attention_2017,\n  title = {Attention Is All You Need},\n  author = {Vaswani, Ashish},\n  date = {2017-06},\n  journal = {NeurIPS},\n  doi = {10.5555/x}\n}',
+        }
+        const text = bibtex[hit.key]
+        if (!text) return json(res, 400, { error: `mock: no citation data for ${hit.key}` })
+        res.writeHead(200, { 'Content-Type': 'text/plain' })
+        return res.end(text)
+      }
       return json(res, 200, hit)
     }
     if (mItem && req.method === 'PATCH') {
@@ -159,9 +193,21 @@ async function startZoteroMock() {
       return
     }
     if (path === '/api/users/0/collections') return json(res, 200, collections, { 'Total-Results': String(collections.length) })
+    if (path === '/api/users/0/tags') {
+      const tags = [...items.values()]
+        .flatMap((it) => (Array.isArray(it.data.tags) ? it.data.tags.map((t) => ({ tag: t.tag })) : []))
+      return json(res, 200, tags, { 'Total-Results': String(tags.length) })
+    }
+    if (path === '/api/users/0/searches') {
+      const searches = [
+        { key: 'SRCH0001', version: 1, data: { key: 'SRCH0001', name: 'Transformers', conditions: [{ condition: 'title', operator: 'contains', value: 'attention' }] } },
+      ]
+      return json(res, 200, searches, { 'Total-Results': String(searches.length) })
+    }
     if (path === '/api/users/0/items' || path === '/api/users/0/items/top') {
       const itemType = url.searchParams.get('itemType') ?? ''
       const q = (url.searchParams.get('q') ?? '').toLowerCase()
+      const parentItem = url.searchParams.get('parentItem') ?? ''
       // 支持 Zotero 的包含（"journalArticle"）与排除（"-attachment -note"）语法；
       // /top 只回顶层条目（无 parentItem），模拟真实 Zotero 的行为
       const include = itemType.split(/\s+/).filter((tok) => tok !== '' && !tok.startsWith('-'))
@@ -172,6 +218,7 @@ async function startZoteroMock() {
         if (exclude.includes(type)) return false
         if (include.length > 0 && !include.includes(type)) return false
         if (topOnly && it.data.parentItem) return false
+        if (parentItem !== '' && it.data.parentItem !== parentItem) return false
         if (q !== '') {
           const haystack = `${it.data.title ?? ''} ${it.data.name ?? ''} ${JSON.stringify(it.data.creators ?? [])} ${it.data.date ?? ''}`.toLowerCase()
           if (!haystack.includes(q)) return false
@@ -208,11 +255,11 @@ maybeTest('runtime contract: every tool registers through the real DSH registry'
   ctx.reflect.provide('systemPrompt', { tools() {}, section() {} })
   const registry = new ToolRuntime(ctx, { mode: 'native' })
   const tools = collectTools({})
-  assert.equal(tools.length, 9)
+  assert.equal(tools.length, 14)
   for (const definition of tools) registry.register(definition)
   // 通过注册表把工具 schema 投影出来（模型可见面），确认无损且可反序列化
   const schemas = registry.schemas()
-  assert.equal(schemas.filter((s) => s.name.startsWith('zotero_')).length, 9)
+  assert.equal(schemas.filter((s) => s.name.startsWith('zotero_')).length, 14)
   for (const schema of schemas) {
     assert.ok(schema.description?.length > 20, `${schema.name} description present`)
     assert.equal(JSON.parse(JSON.stringify(schema.parameters)).type, 'object')
@@ -303,4 +350,47 @@ maybeTest('runtime contract: execute every tool against a mock Zotero and valida
   assert.equal(updated.action, 'update')
   const deleted = await run('zotero_note', { action: 'delete', noteKey: created.noteKey })
   assert.equal(deleted.action, 'delete')
+
+  const exported = await run('zotero_export', { keys: ['ABCD1234'], format: 'bibtex' })
+  assert.equal(exported.format, 'bibtex')
+  assert.equal(exported.count, 1)
+  assert.match(exported.text, /@article\{vaswani_attention_2017/)
+
+  const exportFailures = await run('zotero_export', { keys: ['ABCD1234', 'ZZZZ9999'] })
+  assert.equal(exportFailures.count, 1)
+  assert.equal(exportFailures.failed.length, 1)
+  assert.match(exportFailures.failed[0], /^ZZZZ9999: /)
+  assert.match(exportFailures.failed[0], /404/, 'mock 里不存在的 key 报 404（与真实 Zotero 一致）')
+
+  const annotations = await run('zotero_annotations', { itemKey: 'ABCD1234' })
+  assert.equal(annotations.count, 2)
+  assert.equal(annotations.annotations[0].key, 'ANN00001', '按页序排列')
+  assert.equal(annotations.annotations[0].page, 2)
+  assert.equal(annotations.annotations[0].pageLabel, '2')
+  assert.match(annotations.annotations[0].text, /attention mechanisms/)
+  assert.equal(annotations.annotations[1].annotationType, 'note')
+
+  const browseTags = await run('zotero_browse', { type: 'tags', limit: 10 })
+  assert.deepEqual(browseTags.tags, ['transformer'])
+  const browseSearches = await run('zotero_browse', { type: 'searches' })
+  assert.equal(browseSearches.count, 1)
+  assert.equal(browseSearches.searches[0].name, 'Transformers')
+  assert.match(browseSearches.searches[0].conditions, /title contains attention/)
+
+  const retrieve = await run('zotero_retrieve', { itemKey: 'ABCD1234', query: 'attention mechanisms', topK: 5 })
+  assert.equal(retrieve.itemKey, 'ABCD1234')
+  assert.ok(retrieve.passages.length > 0, 'mock 库有全文/笔记/批注可检索')
+  assert.match(retrieve.passages[0].text, /attention/i, '匹配段排最前')
+  for (const p of retrieve.passages) {
+    assert.ok(['fulltext', 'notes', 'annotations'].includes(p.source))
+    assert.equal(typeof p.score, 'number')
+  }
+
+  const digest = await run('zotero_digest', { itemKey: 'ABCD1234', topK: 3 })
+  assert.equal(digest.item.key, 'ABCD1234')
+  assert.equal(digest.citationFormat, 'bibtex')
+  assert.match(digest.citation, /@article\{vaswani_attention_2017/)
+  assert.equal(digest.childNotes, 1)
+  assert.ok(digest.passages.length > 0 && digest.passages.length <= 3)
+  assert.equal(digest.query, 'attention all you need', 'query 缺省时从标题推导')
 })

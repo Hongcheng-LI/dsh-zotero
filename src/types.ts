@@ -131,3 +131,96 @@ export type ZoteroAttachmentPathResult = {
   exists: boolean
   linked?: boolean
 }
+
+export type ZoteroExportFormat = 'bibtex' | 'ris' | 'csljson'
+
+export type ZoteroExportArgs = { keys: string[]; format?: ZoteroExportFormat }
+
+export type ZoteroExportResult = {
+  format: ZoteroExportFormat
+  count: number
+  text: string
+  truncated?: boolean
+  failed?: string[]
+}
+
+export type ZoteroAnnotation = {
+  key: string
+  /** 批注所属的附件 key */
+  parentKey?: string
+  attachmentFilename?: string
+  /** highlight | note | image | underline | ... */
+  annotationType?: string
+  text?: string
+  /** 批注评论（HTML 已转纯文本） */
+  comment?: string
+  /** PDF 页序（1 起，来自 annotationPosition.pageIndex + 1） */
+  page?: number
+  /** PDF 内印刷页码标签（annotationPageLabel） */
+  pageLabel?: string
+  color?: string
+  dateModified?: string
+}
+
+export type ZoteroAnnotationsArgs = { itemKey: string; attachmentKey?: string }
+
+export type ZoteroAnnotationsResult = { count: number; annotations: ZoteroAnnotation[] }
+
+export type ZoteroBrowseType = 'tags' | 'searches'
+
+export type ZoteroBrowseArgs = { type?: ZoteroBrowseType; limit?: number }
+
+export type ZoteroBrowseResult = {
+  type: ZoteroBrowseType
+  count: number
+  tags?: string[]
+  searches?: Array<{ key: string; name: string; conditions?: string }>
+}
+
+export type ZoteroRetrieveSource = 'fulltext' | 'notes' | 'annotations'
+
+export type ZoteroRetrieveArgs = {
+  itemKey: string
+  query: string
+  sources?: ZoteroRetrieveSource[]
+  topK?: number
+  attachmentKey?: string
+}
+
+export type ZoteroPassage = {
+  source: ZoteroRetrieveSource
+  text: string
+  score: number
+  /** PDF 页序（1 起） */
+  page?: number
+  pageLabel?: string
+  attachmentKey?: string
+  noteKey?: string
+  annotationKey?: string
+}
+
+export type ZoteroRetrieveResult = {
+  itemKey: string
+  title?: string
+  query: string
+  count: number
+  sourcesUsed: ZoteroRetrieveSource[]
+  passages: ZoteroPassage[]
+}
+
+export type ZoteroDigestArgs = {
+  itemKey: string
+  query?: string
+  sources?: ZoteroRetrieveSource[]
+  topK?: number
+}
+
+export type ZoteroDigestResult = {
+  item: ZoteroItem
+  attachments: ZoteroAttachment[]
+  childNotes: number
+  citation: string
+  citationFormat: 'bibtex'
+  query?: string
+  passages: ZoteroPassage[]
+}

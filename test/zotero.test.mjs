@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { apply } from '../lib/index.js'
 import { resolveConfig, slimItem, trimItems } from '../lib/zotero-client.js'
 import { noteToText } from '../lib/notes.js'
+import { queryFromTitle, scorePassages, splitPassages, tokenize } from '../lib/retrieve.js'
 import { attachmentStoragePath, profileDirFromIni, readFulltextCache, resolveStorageDir } from '../lib/storage.js'
 import { writeAttachment } from '../lib/files.js'
 
@@ -48,19 +49,24 @@ test('resolveConfig defaults, validation and new fields', () => {
   assert.throws(() => resolveConfig({ library: 'bogus' }))
 })
 
-test('apply registers nine zotero tools with valid JSON schemas', () => {
+test('apply registers fourteen zotero tools with valid JSON schemas', () => {
   const ctx = harness()
   apply(ctx, {})
   const names = ctx.all.map((t) => t.name)
   assert.deepEqual([...names].sort(), [
+    'zotero_annotations',
     'zotero_attachment_path',
+    'zotero_browse',
     'zotero_collections',
+    'zotero_digest',
     'zotero_download',
+    'zotero_export',
     'zotero_fulltext',
     'zotero_item',
     'zotero_note',
     'zotero_notes',
     'zotero_recent',
+    'zotero_retrieve',
     'zotero_search',
   ])
   for (const tool of ctx.all) {
@@ -75,6 +81,10 @@ test('apply registers nine zotero tools with valid JSON schemas', () => {
   assert.ok(note.parameters.properties.action)
   assert.deepEqual(ctx.tool('zotero_item').parameters.required, ['key'])
   assert.deepEqual(ctx.tool('zotero_fulltext').parameters.required, ['itemKey'])
+  assert.deepEqual(ctx.tool('zotero_export').parameters.required, ['keys'])
+  assert.deepEqual(ctx.tool('zotero_annotations').parameters.required, ['itemKey'])
+  assert.deepEqual(ctx.tool('zotero_retrieve').parameters.required, ['itemKey', 'query'])
+  assert.deepEqual(ctx.tool('zotero_digest').parameters.required, ['itemKey'])
 })
 
 test('argument validation across tools', async () => {
@@ -85,6 +95,13 @@ test('argument validation across tools', async () => {
   await assert.rejects(() => ctx.tool('zotero_note').execute({ action: 'update', noteKey: 'bad', text: 'x' }), /8 位 key/)
   await assert.rejects(() => ctx.tool('zotero_note').execute({ action: 'remove', itemKey: 'ABCD1234', text: 'x' }), /action/)
   await assert.rejects(() => ctx.tool('zotero_fulltext').execute({ itemKey: 'ABCD123' }), /8 位 key/)
+  await assert.rejects(() => ctx.tool('zotero_export').execute({ keys: [] }), /keys/)
+  await assert.rejects(() => ctx.tool('zotero_export').execute({ keys: ['bad'] }), /8 位 key/)
+  await assert.rejects(() => ctx.tool('zotero_export').execute({ keys: Array.from({ length: 26 }, (_, i) => `K${String(i).padStart(7, '0')}`) }), /25/)
+  await assert.rejects(() => ctx.tool('zotero_annotations').execute({ itemKey: 'ABCD123' }), /8 位 key/)
+  await assert.rejects(() => ctx.tool('zotero_retrieve').execute({ itemKey: 'ABCD1234', query: '  ' }), /query/)
+  await assert.rejects(() => ctx.tool('zotero_retrieve').execute({ itemKey: 'ABCD123' }), /8 位 key/)
+  await assert.rejects(() => ctx.tool('zotero_digest').execute({ itemKey: 'ABCD123' }), /8 位 key/)
 })
 
 test('trimItems controls result verbosity', () => {
@@ -105,6 +122,55 @@ test('trimItems controls result verbosity', () => {
 test('noteToText converts note HTML', () => {
   assert.equal(noteToText('<p>hello<br>world</p>'), 'hello\nworld')
   assert.equal(noteToText('<div>a &amp; b &lt;c&gt; &quot;d&quot; &#65;</div>'), 'a & b <c> "d" A')
+})
+
+test('splitPassages splits long text at sentence boundaries with overlap', () => {
+  const sentence = 'This is a test sentence about nanomedicine. '
+  const long = sentence.repeat(60) // ~2640 chars → 2+ passages
+  const parts = splitPassages(long, 1300, 160)
+  assert.ok(parts.length >= 2, `expected >=2 passages, got ${parts.length}`)
+  for (const part of parts) {
+    assert.ok(part.length > 40, 'passages carry real content')
+    assert.ok(part.length <= 1300 + 40, `passage too long: ${part.length}`)
+  }
+  // 短文本原样返回
+  assert.deepEqual(splitPassages('short text'), ['short text'])
+  assert.deepEqual(splitPassages(''), [])
+  // CJK 句号也能切
+  const cjk = '第一句话讲的是方法。'.repeat(200)
+  const cjkParts = splitPassages(cjk, 1300, 160)
+  assert.ok(cjkParts.length >= 2)
+})
+
+test('tokenize handles mixed Latin and CJK', () => {
+  const terms = tokenize('Paclitaxel-loaded nanoparticles 纳米载体的副作用')
+  assert.ok(terms.includes('paclitaxel-loaded'))
+  assert.ok(terms.includes('nanoparticles'))
+  assert.ok(terms.includes('纳米'), 'CJK bigrams present')
+  assert.ok(terms.includes('米载'), 'CJK bigrams span boundaries')
+  assert.ok(!terms.includes('的'), 'stopword dropped')
+})
+
+test('scorePassages ranks matching passages first', () => {
+  const passages = [
+    { source: 'fulltext', text: 'The manufacturing process of liposomes involves lipid hydration and extrusion steps.' },
+    { source: 'fulltext', text: 'Paclitaxel-loaded nanoparticles showed significant tumor suppression in mice models.' },
+    { source: 'notes', text: 'Random meeting notes about scheduling and budget planning for the lab.' },
+  ]
+  const ranked = scorePassages(passages, 'paclitaxel nanoparticle tumor suppression')
+  assert.equal(ranked.length, 3)
+  assert.match(ranked[0].text, /Paclitaxel/)
+  assert.ok(ranked[0].score > 0)
+  assert.equal(ranked[ranked.length - 1].text, passages[2].text, 'irrelevant passage ranks last')
+  // 空查询不炸，保持原序兜底
+  const fallback = scorePassages(passages, '')
+  assert.equal(fallback.length, 3)
+})
+
+test('queryFromTitle derives fallback query', () => {
+  const query = queryFromTitle('Engineering of Paclitaxel-Loaded Nanoparticles for Tumor Therapy')
+  assert.ok(query.includes('paclitaxel-loaded'))
+  assert.ok(!/\bthe\b/.test(query), 'stopwords dropped')
 })
 
 test('profileDirFromIni prefers the Install default and honors absolute paths', () => {

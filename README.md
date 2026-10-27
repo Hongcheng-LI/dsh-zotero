@@ -27,7 +27,12 @@ DeepSeek Harness 的 Zotero 工具插件：让 agent 直接**检索你的 Zotero
 | `zotero_attachment_path` | 返回附件在 storage 的原始绝对路径，让 read 工具零拷贝直读 |
 | `zotero_download` | 把条目的 PDF 附件下载到会话工作区（默认），供模型用 read 工具阅读 |
 | `zotero_notes` | 列出某条目的子笔记，或全库按关键词搜笔记正文 |
-| `zotero_note` | 笔记写入：create 新增 / append 追加 / update 更新 / delete 删除。⚠️ 实测多数版本的本地 API 为只读（POST/PATCH/DELETE 未开放），写操作会返回明确提示并建议手动操作 |
+| `zotero_note` | 笔记写入：create 新增 / append 追加 / update 更新 / delete 删除。⚠️ 部分版本本地 API 为只读或要求额外握手（428 Zotero-Server-ID），写操作会返回明确提示 |
+| `zotero_export` | 把条目导出为引用格式：BibTeX / RIS / CSL JSON（逐 key 抓取后拼接，最多 25 条/次），可直接贴进 .bib/.ris 或引用管理器 |
+| `zotero_annotations` | 读取条目附件上的 PDF 批注（高亮、批注笔记），带 PDF 页码、文中页码标签、引文和你的评论；自动翻页拉全（实测有附件挂 1000+ 条批注） |
+| `zotero_browse` | 列出库内用户标签（可喂给 zotero_search 的 tag 参数）和保存的智能搜索 |
+| `zotero_retrieve` | 段落级检索：在条目的全文+笔记+批注里按 query 打分（BM25 风格 tf-idf，中英文分词），返回 Top-K 最相关段落，**带页码锚点**，适合精确引用和"这篇哪里说了 X" |
+| `zotero_digest` | 一次打包条目简报：完整元数据 + 摘要 + BibTeX 引用 + 附件列表 + 与 query 最相关的段落（缺省用标题词），"总结这篇论文"的首选入口 |
 
 示例对话：
 
@@ -116,6 +121,11 @@ Requires Zotero 7+ (tested on 9.0.6 / Windows) running locally with "Allow other
 | `zotero_download` | Download an attachment (PDF) to the workspace |
 | `zotero_notes` | List an item's child notes or search notes library-wide |
 | `zotero_note` | Create / append / update / delete notes |
+| `zotero_export` | Export items as BibTeX / RIS / CSL JSON (keys fetched one by one, up to 25 per call) |
+| `zotero_annotations` | Read PDF annotations on an item's attachments: highlight text, your comments, PDF page numbers and printed page labels (auto-paginates past 100) |
+| `zotero_browse` | List user tags (feed them to zotero_search's `tag`) and saved searches |
+| `zotero_retrieve` | Passage-level retrieval: rank the item's full text + notes + annotations against a query (tf-idf, mixed Latin/CJK), top-K passages with page anchors |
+| `zotero_digest` | One-shot briefing: metadata + abstract + BibTeX citation + attachments + top query-relevant passages (defaults to title-derived query) |
 
 Install: `dsh plugin add github:Hongcheng-LI/dsh-zotero` (or via the desktop plugin manager), then restart DSH. Optional config (`baseUrl`, `library`, `downloadDir`, `maxAttachmentBytes`, `maxLimit`, `timeoutMs`, …) is available both as a settings form (schemastery `Config`) and under the `tool-zotero` row of your profile's `cordis.patch.yml`.
 

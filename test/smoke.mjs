@@ -7,7 +7,9 @@
  *   ZOTERO_SMOKE=1 ZOTERO_BASE_URL=http://127.0.0.1:23119 node --test test/smoke.mjs
  *
  * 覆盖链路：zotero_recent → zotero_item（找带附件的条目）→ zotero_search
- * → zotero_fulltext（ft-cache 或下载兜底）→ 笔记生命周期 create/append/update/delete。
+ * → zotero_fulltext（ft-cache 或下载兜底）→ zotero_export / zotero_annotations
+ * → zotero_browse → zotero_retrieve / zotero_digest
+ * → 笔记生命周期 create/append/update/delete。
  * 笔记测试自带清理：结束时删除创建的笔记，不影响真实文献库。
  */
 import assert from 'node:assert/strict'
@@ -49,7 +51,10 @@ async function reachable() {
 }
 
 function unsupported(error) {
-  return error instanceof Error && error.message.includes('不支持该写操作')
+  return (
+    error instanceof Error &&
+    (error.message.includes('不支持该写操作') || error.message.includes('Zotero-Server-ID'))
+  )
 }
 
 const state = { ctx: null, tempDir: '', recent: [], withAttachment: null }
@@ -132,6 +137,78 @@ test('zotero_attachment_path: 解析附件原始路径', { skip: ENABLED ? false
       ? `storage 路径可用: ${result.path}`
       : `路径未落地（exists=false${result.linked ? '，链接型附件' : ''}）: ${result.path}`,
   )
+})
+
+test('zotero_export: 单条 BibTeX 导出', { skip: ENABLED ? false : SKIP_REASON }, async (t) => {
+  if (!state.ctx || state.recent.length === 0) return t.skip('文献库为空')
+  const key = state.withAttachment?.itemKey ?? state.recent[0].key
+  const result = await state.ctx.tool('zotero_export').execute({ keys: [key], format: 'bibtex' })
+  assert.equal(result.format, 'bibtex')
+  assert.equal(result.count, 1)
+  assert.match(result.text, /@/, 'BibTeX 条目以 @ 开头')
+  t.diagnostic(`导出 ${result.count} 条，${result.text.length} 字符`)
+})
+
+test('zotero_annotations: 读取 PDF 批注', { skip: ENABLED ? false : SKIP_REASON }, async (t) => {
+  if (!state.ctx || !state.withAttachment) return t.skip('没有带附件的条目')
+  const { itemKey } = state.withAttachment
+  const result = await state.ctx.tool('zotero_annotations').execute({ itemKey })
+  assert.ok(Array.isArray(result.annotations))
+  assert.equal(result.count, result.annotations.length)
+  for (const a of result.annotations) {
+    assert.match(a.key, /^[A-Z0-9]{8}$/i)
+    assert.ok(a.annotationType === undefined || typeof a.annotationType === 'string')
+    assert.ok(a.page === undefined || (Number.isInteger(a.page) && a.page >= 1))
+  }
+  t.diagnostic(`批注 ${result.count} 条`)
+})
+
+test('zotero_browse: 标签与保存的搜索', { skip: ENABLED ? false : SKIP_REASON }, async (t) => {
+  if (!state.ctx) return t.skip('前置条件未满足')
+  const tags = await state.ctx.tool('zotero_browse').execute({ type: 'tags', limit: 20 })
+  assert.equal(tags.type, 'tags')
+  assert.ok(Array.isArray(tags.tags))
+  assert.equal(tags.count, tags.tags.length)
+  const searches = await state.ctx.tool('zotero_browse').execute({ type: 'searches' })
+  assert.equal(searches.type, 'searches')
+  assert.ok(Array.isArray(searches.searches))
+  t.diagnostic(`标签 ${tags.count} 个，保存的搜索 ${searches.count} 个`)
+})
+
+test('zotero_retrieve: 段落级检索', { skip: ENABLED ? false : SKIP_REASON }, async (t) => {
+  if (!state.ctx || !state.withAttachment) return t.skip('没有带附件的条目')
+  const { itemKey } = state.withAttachment
+  const title = state.recent.find((i) => i.key === itemKey)?.title ?? ''
+  const query = title.split(/\s+/).slice(0, 4).join(' ') || 'study'
+  const result = await state.ctx.tool('zotero_retrieve').execute({ itemKey, query, topK: 5 })
+  assert.equal(result.itemKey, itemKey)
+  assert.ok(Array.isArray(result.passages))
+  assert.ok(Array.isArray(result.sourcesUsed))
+  assert.ok(result.passages.length <= 5)
+  for (const p of result.passages) {
+    assert.ok(['fulltext', 'notes', 'annotations'].includes(p.source), `来源合法: ${p.source}`)
+    assert.ok(typeof p.score === 'number' && Number.isFinite(p.score))
+  }
+  if (result.passages.length > 0) {
+    t.diagnostic(`query="${query}" 返回 ${result.count} 段（来源 ${result.sourcesUsed.join('、')}），首段相关度 ${result.passages[0].score}`)
+  } else {
+    t.diagnostic(`query="${query}" 无命中（该条目没有可检索的全文/笔记/批注）`)
+  }
+})
+
+test('zotero_digest: 元数据+引用+段落一次打包', { skip: ENABLED ? false : SKIP_REASON }, async (t) => {
+  if (!state.ctx || state.recent.length === 0) return t.skip('文献库为空')
+  const key = state.withAttachment?.itemKey ?? state.recent[0].key
+  const result = await state.ctx.tool('zotero_digest').execute({ itemKey: key, topK: 3 })
+  assert.equal(result.item.key, key)
+  assert.equal(result.citationFormat, 'bibtex')
+  assert.ok(typeof result.citation === 'string')
+  if (result.citation !== '') assert.match(result.citation, /@/, 'BibTeX 引用含 @')
+  assert.ok(Array.isArray(result.attachments))
+  assert.ok(Array.isArray(result.passages))
+  assert.ok(result.passages.length <= 3)
+  assert.ok(typeof result.query === 'string' && result.query.length > 0, 'query 缺省时从标题推导')
+  t.diagnostic(`digest: ${result.passages.length} 段，附件 ${result.attachments.length} 个，citation ${result.citation.length} 字符`)
 })
 
 test('zotero_note: 笔记生命周期 create → notes → append → update → delete', { skip: ENABLED ? false : SKIP_REASON }, async (t) => {

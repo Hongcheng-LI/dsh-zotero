@@ -58,3 +58,42 @@ export async function extractPdfText(path: string, maxChars = 0): Promise<string
     await doc?.destroy()
   }
 }
+
+/**
+ * 解析 PDF 文本并保留页边界（供 zotero_retrieve 的页码锚点使用）。
+ * @param maxPages 最大解析页数（0 = 全部）
+ * @returns 每页文本数组（索引 0 = 第 1 页）；空页保留为空串以维持页码对齐
+ */
+export async function extractPdfPages(path: string, maxPages = 0): Promise<string[]> {
+  const data = new Uint8Array(await readFile(path))
+  let doc: PDFDocumentProxy | null = null
+  try {
+    doc = await getDocument({
+      data,
+      useSystemFonts: false,
+      disableFontFace: true,
+      isEvalSupported: false,
+      ...(STANDARD_FONT_DIR ? { standardFontDataUrl: `${STANDARD_FONT_DIR.replace(/\\/g, '/')}/` } : {}),
+    }).promise
+
+    const pages: string[] = []
+    const total = maxPages > 0 ? Math.min(maxPages, doc.numPages) : doc.numPages
+    for (let i = 1; i <= total; i++) {
+      const page: PDFPageProxy = await doc.getPage(i)
+      try {
+        const content = await page.getTextContent()
+        pages.push(
+          content.items
+            .map((it) => ('str' in it ? (it as { str: string }).str : ''))
+            .join(' ')
+            .trim(),
+        )
+      } finally {
+        page.cleanup()
+      }
+    }
+    return pages
+  } finally {
+    await doc?.destroy()
+  }
+}

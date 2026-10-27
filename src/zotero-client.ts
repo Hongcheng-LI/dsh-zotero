@@ -3,6 +3,7 @@ import { request as httpRequest } from 'node:http'
 import { basename } from 'node:path'
 import { fileUrlToPath } from './files.js'
 import type {
+  ZoteroAnnotation,
   ZoteroAttachment,
   ZoteroCollection,
   ZoteroConfig,
@@ -96,6 +97,11 @@ export class ZoteroClient {
       if (response.status === 400 && body.includes('Endpoint does not support method')) {
         throw new ZoteroError(
           '当前 Zotero 本地 API 为只读，不支持该写操作（POST/PATCH/DELETE 未开放）：笔记的创建/修改/删除不可用，读取不受影响。',
+        )
+      }
+      if (response.status === 428 && body.includes('Zotero-Server-ID')) {
+        throw new ZoteroError(
+          '当前 Zotero 版本的本地 API 要求写操作提供 Zotero-Server-ID（跨站写保护，428）。读取不受影响；笔记的创建/修改/删除在此 Zotero 版本暂不可用。',
         )
       }
       const hint = response.status === 405 || response.status === 501 ? '（当前 Zotero 版本可能不支持该写操作）' : ''
@@ -381,6 +387,111 @@ export class ZoteroClient {
     return found
   }
 
+  /**
+   * 单条目导出为引用格式（BibTeX/RIS/CSL JSON）。
+   * 本地 API 对多 key 的 itemKey= 过滤会静默忽略（实测返回整库），因此
+   * 批量导出必须逐 key 调用本方法后由调用方拼接。
+   */
+  async exportItem(key: string, format: 'bibtex' | 'ris' | 'csljson'): Promise<string> {
+    const response = await this.request(`/items/${encodeURIComponent(key)}?${qs([['format', format]])}`, {
+      headers: { Accept: 'text/plain, application/json' },
+    })
+    const text = await response.text()
+    if (text.trim() === '') throw new ZoteroError(`条目 ${key} 导出结果为空（format=${format}）`)
+    return text
+  }
+
+  /**
+   * 读取条目附件上的 PDF 批注（高亮/笔记/图像等）。
+   * 本地 API 不在 /items/{key}/children 里返回批注，必须按
+   * itemType=annotation&parentItem=<附件key> 检索（实测有效）。
+   */
+  async annotations(itemKey: string, attachmentKey?: string): Promise<ZoteroAnnotation[]> {
+    const { attachments } = await this.children(itemKey)
+    const targets = attachmentKey
+      ? attachments.filter((a) => a.key === attachmentKey)
+      : attachments
+    if (targets.length === 0) {
+      if (attachmentKey) {
+        throw new ZoteroError(`附件 ${attachmentKey} 不属于条目 ${itemKey}。请先用 zotero_item 查看该条目的附件列表。`)
+      }
+      return []
+    }
+    const out: ZoteroAnnotation[] = []
+    for (const attachment of targets) {
+      // 单页 limit=100 会被截断（实测有附件挂 100+ 条批注），用 start 翻页拉全；
+      // 2000 条封顶防失控
+      const rows: RawItem[] = []
+      for (let start = 0; start < 2000; start += 100) {
+        const page = await this.getJson<RawItem[]>(
+          `/items?${qs([
+            ['itemType', 'annotation'],
+            ['parentItem', attachment.key],
+            ['format', 'json'],
+            ['limit', '100'],
+            ['start', String(start)],
+          ])}`,
+        )
+        rows.push(...page)
+        if (page.length < 100) break
+      }
+      for (const row of rows) {
+        const data = row.data ?? {}
+        const position = parseAnnotationPosition(str(data.annotationPosition))
+        out.push({
+          key: row.key,
+          parentKey: attachment.key,
+          attachmentFilename: attachment.filename ?? attachment.title,
+          annotationType: str(data.annotationType),
+          text: str(data.annotationText),
+          comment: str(data.annotationComment) ? noteToText(String(data.annotationComment)) : undefined,
+          page: position?.pageIndex !== undefined ? position.pageIndex + 1 : undefined,
+          pageLabel: str(data.annotationPageLabel),
+          color: str(data.annotationColor),
+          dateModified: str(data.dateModified),
+        })
+      }
+    }
+    // 排序：有页码的按页序在前，同页内按 Zotero 的 annotationSortIndex 字典序（即文档位置序）
+    return out.sort((a, b) => (a.page ?? Number.MAX_SAFE_INTEGER) - (b.page ?? Number.MAX_SAFE_INTEGER))
+  }
+
+  /** 列出库内用户标签（按 Zotero 默认序） */
+  async tags(limit: number): Promise<string[]> {
+    const raw = await this.getJson<Array<{ tag?: unknown }>>(
+      `/tags?${qs([
+        ['format', 'json'],
+        ['limit', String(limit)],
+      ])}`,
+    )
+    return raw.map((row) => String(row.tag ?? '')).filter((tag) => tag !== '')
+  }
+
+  /** 列出保存的智能搜索（key + 名称 + 条件摘要） */
+  async savedSearches(limit: number): Promise<Array<{ key: string; name: string; conditions?: string }>> {
+    const raw = await this.getJson<Array<{ key: string; data?: Record<string, unknown> }>>(
+      `/searches?${qs([
+        ['format', 'json'],
+        ['limit', String(limit)],
+      ])}`,
+    )
+    return raw.map((row) => {
+      const data = row.data ?? {}
+      const conditions = Array.isArray(data.conditions)
+        ? (data.conditions as Array<{ condition?: unknown; operator?: unknown; value?: unknown }>)
+        : []
+      const summary = conditions
+        .slice(0, 3)
+        .map((c) => `${String(c.condition ?? '?')} ${String(c.operator ?? '')} ${String(c.value ?? '')}`.trim())
+        .join('; ')
+      return {
+        key: row.key,
+        name: str(data.name) ?? '(未命名)',
+        conditions: summary || undefined,
+      }
+    })
+  }
+
   async downloadAttachment(attachmentKey: string): Promise<{ bytes: Uint8Array; contentType: string; filename: string; path?: string }> {
     const head = await this.getJson<RawItem>(`/items/${encodeURIComponent(attachmentKey)}`)
     const data = head?.data ?? {}
@@ -435,6 +546,18 @@ function str(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined
   const trimmed = value.trim()
   return trimmed !== '' ? trimmed : undefined
+}
+
+/** annotationPosition 是 JSON 字符串，如 {"pageIndex":0,"rects":[[...]]}；解析失败返回 null */
+function parseAnnotationPosition(raw: string | undefined): { pageIndex?: number } | null {
+  if (!raw) return null
+  try {
+    const parsed = JSON.parse(raw) as { pageIndex?: unknown }
+    const pageIndex = typeof parsed?.pageIndex === 'number' && parsed.pageIndex >= 0 ? parsed.pageIndex : undefined
+    return { pageIndex }
+  } catch {
+    return null
+  }
 }
 
 function extractYear(date: string | undefined): number | undefined {
