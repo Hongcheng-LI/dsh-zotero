@@ -16,5 +16,5 @@
 #       maxFulltextChars: 80000            # zotero_fulltext 返回的最大字符数
 - insert:
     - id: tool-zotero
-      name: dsh-zotero
+      name: dsh-zotero-local
       config: {}

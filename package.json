@@ -1,6 +1,6 @@
 {
   "name": "dsh-zotero-local",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Zotero tools for DeepSeek Harness via the Zotero local API (no API key): search your library, read metadata and PDF full text, retrieve query-relevant passages with page anchors, read PDF annotations, export BibTeX/RIS/CSL JSON citations, and get one-shot item digests.",
   "type": "module",
   "main": "lib/index.js",
