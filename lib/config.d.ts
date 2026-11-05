@@ -9,6 +9,8 @@ export declare const Config: Schema<Schemastery.ObjectS<NoInfer<{
     maxLimit: Schema<string, string, "plain"> | Schema<number, number, "plain">;
     timeoutMs: Schema<string, string, "plain"> | Schema<number, number, "plain">;
     maxFulltextChars: Schema<string, string, "plain"> | Schema<number, number, "plain">;
+    localApiKey: Schema<string, string, "plain"> | Schema<number, number, "plain">;
+    authorizeTimeoutMs: Schema<string, string, "plain"> | Schema<number, number, "plain">;
 }>>, Schemastery.ObjectT<NoInfer<{
     baseUrl: Schema<string, string, "plain"> | Schema<number, number, "plain">;
     library: Schema<string, string, "plain"> | Schema<number, number, "plain">;
@@ -19,4 +21,6 @@ export declare const Config: Schema<Schemastery.ObjectS<NoInfer<{
     maxLimit: Schema<string, string, "plain"> | Schema<number, number, "plain">;
     timeoutMs: Schema<string, string, "plain"> | Schema<number, number, "plain">;
     maxFulltextChars: Schema<string, string, "plain"> | Schema<number, number, "plain">;
+    localApiKey: Schema<string, string, "plain"> | Schema<number, number, "plain">;
+    authorizeTimeoutMs: Schema<string, string, "plain"> | Schema<number, number, "plain">;
 }>>, "plain">;

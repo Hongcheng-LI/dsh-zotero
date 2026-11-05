@@ -4,7 +4,7 @@
 
 <a name="中文"></a>
 
-DeepSeek Harness 的 Zotero 工具插件：让 agent 直接**检索你的 Zotero 文献库、阅读条目元数据与摘要、列出分类和 PDF 附件、读 PDF 全文、代写读书笔记**。通过 Zotero 本地 API（7 代及以上可用，实测 9.x；`http://127.0.0.1:23119`）访问，无需 API Key，纯 Node 实现，零核心改动。
+DeepSeek Harness 的 Zotero 工具插件：让 agent 直接**检索你的 Zotero 文献库、阅读条目元数据与摘要、列出分类和 PDF 附件、读 PDF 全文、写回读书笔记与 PDF 高亮**。通过 Zotero 本地 API（7 代及以上可用，实测 9.x / 10.0.7；`http://127.0.0.1:23119`）访问：**读取不需要任何密钥，写入需要一次性本地授权**（见「写入授权」），纯 Node 实现，零核心改动。
 
 > **兼容版本**：按 **DSH 运行时 0.2.0-rc.x**（桌面版 44.x 内核）的插件规范更新——schemastery `Config` 配置校验与设置表单、`locale/` 插件管理器元信息、预构建 `lib/` 直装、`dsh.plugin.json` 已按新规范移除（新运行时不读取该文件）。插件本体不声明任何 `@deepseek-ai/dsh-*` peer，能通过所有版本的兼容门禁；并用真实 `@deepseek-ai/dsh-tools` 注册表做契约测试（见「开发」）。
 
@@ -13,7 +13,23 @@ DeepSeek Harness 的 Zotero 工具插件：让 agent 直接**检索你的 Zotero
 1. 本机安装并运行 **Zotero 7 及以上**（本地 API 自 7 代引入；本项目在 **Zotero 9.0.6 / Windows** 上实测通过）；
 2. 打开 Zotero：**设置 → 高级 → 通用 → 勾选「允许本机上的其他应用程序与 Zotero 通信」**。
 
-> 兼容性说明：读取类工具（检索/条目/全文/附件路径/笔记读取）在 Zotero 9 上全部实测通过。笔记**写入**（create/append/update/delete）受本地 API 只读限制不可用（见工具表说明）。
+> 兼容性说明：读取类工具（检索/条目/全文/附件路径/笔记读取/批注读取）在 Zotero 9 / 10.0.7 上全部实测通过。写入（笔记 create/append/update/delete、PDF 高亮）在 Zotero 7+ 上可用，但必须先完成一次「本地 API 授权」：早期判断「本地 API 只读」是不准确的，实际只是写请求缺 `Zotero-Server-ID` 与 `Zotero-API-Key` 两个头，详见下节。
+
+## 写入授权（Zotero 7+ / 9 / 10）
+
+Zotero 本地 API 的 GET 读取无认证；**POST / PATCH / PUT / DELETE 写请求**必须同时带：
+
+1. `Zotero-Server-ID`：每个响应头都会返回，插件自动缓存并在写请求里回传（缺失 → 428，不匹配 → 412）；
+2. `Zotero-API-Key`：通过 `POST /api/local/authorize` 获取。调用 `zotero_authorize` 工具后，Zotero 桌面端会弹出「本地 API 授权」窗口：
+   - 点 **「始终允许 / Always Allow」** → 持久密钥写入 `<profile>/localAPIKeys.json`，插件以后自动读取，一劳永逸；
+   - 点 **「允许 / Allow」** → 一次性密钥，首次成功写入后即被消费，下次写会返回 401，需重新授权。
+
+也可以把密钥直接填进插件配置 `localApiKey`（或 `cordis.patch.yml`）。**授权弹窗需要人工点击**，`zotero_authorize` 会等待最多 120 秒（`authorizeTimeoutMs` 可调）。
+
+写回能力：
+- `zotero_note`：create / append / update / delete 子笔记（`POST /items`、`PATCH /items/<key>`、`DELETE /items/<key>`）；
+- `zotero_highlight`：在某个 PDF 附件下新建高亮批注（annotation item，`POST /items`），带页码、印刷页码标签、颜色、选中文字与坐标。
+- `zotero_annotation_comment`：修改已有 PDF 高亮的批注评论（annotationComment）；传空字符串可清空评论。
 
 ## 工具一览
 
@@ -27,7 +43,10 @@ DeepSeek Harness 的 Zotero 工具插件：让 agent 直接**检索你的 Zotero
 | `zotero_attachment_path` | 返回附件在 storage 的原始绝对路径，让 read 工具零拷贝直读 |
 | `zotero_download` | 把条目的 PDF 附件下载到会话工作区（默认），供模型用 read 工具阅读 |
 | `zotero_notes` | 列出某条目的子笔记，或全库按关键词搜笔记正文 |
-| `zotero_note` | 笔记写入：create 新增 / append 追加 / update 更新 / delete 删除。⚠️ 部分版本本地 API 为只读或要求额外握手（428 Zotero-Server-ID），写操作会返回明确提示 |
+| `zotero_note` | 笔记写入：create 新增 / append 追加 / update 更新 / delete 删除。需先完成写入授权 |
+| `zotero_authorize` | 触发 Zotero「本地 API 授权」弹窗获取写密钥；已有持久 key 时直接报告、不重复弹窗 |
+| `zotero_highlight` | 把 PDF 高亮（annotation item）写回指定附件：选中文字、页码、印刷页码标签、颜色、坐标 |
+| `zotero_annotation_comment` | 修改已有 PDF 高亮的批注评论（annotationComment），空字符串清空 |
 | `zotero_export` | 把条目导出为引用格式：BibTeX / RIS / CSL JSON（逐 key 抓取后拼接，最多 25 条/次），可直接贴进 .bib/.ris 或引用管理器 |
 | `zotero_annotations` | 读取条目附件上的 PDF 批注（高亮、批注笔记），带 PDF 页码、文中页码标签、引文和你的评论；自动翻页拉全（实测有附件挂 1000+ 条批注） |
 | `zotero_browse` | 列出库内用户标签（可喂给 zotero_search 的 tag 参数）和保存的智能搜索 |
@@ -74,6 +93,8 @@ dsh plugin --profile web add github:Hongcheng-LI/dsh-zotero
     maxFulltextChars: 80000            # zotero_fulltext 返回的最大字符数，默认 80000
     maxLimit: 50                       # 检索结果条数上限，默认 50
     timeoutMs: 15000                   # 本地 API 超时（毫秒）
+    localApiKey: ''                    # 本地 API 写密钥；留空自动读 Zotero「始终允许」保存的持久 key
+    authorizeTimeoutMs: 120000         # 等待授权弹窗的超时（毫秒）
 ```
 
 非法配置（比如 `library: abc`）会在**加载期**被 Config schema 拒绝并明确报错，而不是等到调用才失败。
@@ -89,7 +110,7 @@ npm run audit      # 运行时审计：清单 / patch / 构建产物 / locale / 
 npm run test:smoke # 真实环境冒烟测试：对本机 Zotero 完整跑一遍工具链
 ```
 
-**运行时契约测试（可选但推荐）**：`test/registry-contract.test.mjs` 会用**真实**的 DSH 工具注册表注册全部 9 个工具，并跑一遍 execute → output schema 校验 → render 管线（mock 的 Zotero 本地 API，离线可跑）。`@deepseek-ai/dsh-tools` 刻意不出现在 package.json（插件对 DSH 零运行时依赖），想跑契约测试时装一份与目标运行时一致的版本即可，不装则自动跳过：
+**运行时契约测试（可选但推荐）**：`test/registry-contract.test.mjs` 会用**真实**的 DSH 工具注册表注册全部 17 个工具，并跑一遍 execute → output schema 校验 → render 管线（mock 的 Zotero 本地 API，离线可跑）。`@deepseek-ai/dsh-tools` 刻意不出现在 package.json（插件对 DSH 零运行时依赖），想跑契约测试时装一份与目标运行时一致的版本即可，不装则自动跳过：
 
 ```sh
 npm install --no-save @deepseek-ai/dsh-tools@0.2.0-rc.2
@@ -104,7 +125,7 @@ npm test
 
 <a name="english"></a>
 
-Zotero tools for DeepSeek Harness: search your library, read item metadata and abstracts, list collections and PDF attachments, read full text, download PDFs into the session workspace, and attach notes — all through the Zotero local API (no API key needed).
+Zotero tools for DeepSeek Harness: search your library, read item metadata and abstracts, list collections and PDF attachments, read full text, download PDFs into the session workspace, write back child notes and PDF highlights — all through the Zotero local API. **Reads need no key; writes need a one-time local authorization** (`zotero_authorize`, choose "Always Allow" in the Zotero dialog).
 
 > **Compatibility**: updated for the **DSH 0.2.0-rc.x plugin contract** (desktop 44.x core) — schemastery `Config` (validated config + settings form), `locale/` metadata for the plugin manager, prebuilt `lib/` shipped in-repo (pnpm 10 blocks dependency build scripts), `dsh.plugin.json` removed per the current spec. The plugin declares no `@deepseek-ai/dsh-*` peers, so it passes the version-compatibility gate on every DSH release; a contract test runs every tool through the real `@deepseek-ai/dsh-tools` registry.
 
@@ -120,14 +141,17 @@ Requires Zotero 7+ (tested on 9.0.6 / Windows) running locally with "Allow other
 | `zotero_attachment_path` | On-disk path of a stored attachment (zero-copy read) |
 | `zotero_download` | Download an attachment (PDF) to the workspace |
 | `zotero_notes` | List an item's child notes or search notes library-wide |
-| `zotero_note` | Create / append / update / delete notes |
+| `zotero_note` | Create / append / update / delete child notes (needs write authorization) |
+| `zotero_authorize` | Obtain a local API write key via Zotero's authorization dialog; reports an existing persistent key without re-prompting |
+| `zotero_highlight` | Write a PDF highlight (annotation item) back under an attachment, with text, page, printed page label, color and rects |
+| `zotero_annotation_comment` | Update an existing PDF highlight's annotation comment (annotationComment); empty string clears it |
 | `zotero_export` | Export items as BibTeX / RIS / CSL JSON (keys fetched one by one, up to 25 per call) |
 | `zotero_annotations` | Read PDF annotations on an item's attachments: highlight text, your comments, PDF page numbers and printed page labels (auto-paginates past 100) |
 | `zotero_browse` | List user tags (feed them to zotero_search's `tag`) and saved searches |
 | `zotero_retrieve` | Passage-level retrieval: rank the item's full text + notes + annotations against a query (tf-idf, mixed Latin/CJK), top-K passages with page anchors |
 | `zotero_digest` | One-shot briefing: metadata + abstract + BibTeX citation + attachments + top query-relevant passages (defaults to title-derived query) |
 
-Install: `dsh plugin add github:Hongcheng-LI/dsh-zotero` (or via the desktop plugin manager), then restart DSH. Optional config (`baseUrl`, `library`, `downloadDir`, `maxAttachmentBytes`, `maxLimit`, `timeoutMs`, …) is available both as a settings form (schemastery `Config`) and under the `tool-zotero` row of your profile's `cordis.patch.yml`.
+Install: `dsh plugin add github:Hongcheng-LI/dsh-zotero` (or via the desktop plugin manager), then restart DSH. For write tools, run `zotero_authorize` once and pick "Always Allow" in Zotero's dialog. Optional config (`baseUrl`, `library`, `downloadDir`, `maxAttachmentBytes`, `maxLimit`, `timeoutMs`, `localApiKey`, `authorizeTimeoutMs`, …) is available both as a settings form (schemastery `Config`) and under the `tool-zotero` row of your profile's `cordis.patch.yml`.
 
 Development: `npm install && npm test` (offline unit tests), `npm run audit` (runtime audit), `npm run test:smoke` (live Zotero). Opt-in contract test against the real DSH registry: `npm install --no-save @deepseek-ai/dsh-tools@0.2.0-rc.2 && npm test`. `lib/` is committed on purpose and the package declares no lifecycle scripts — pnpm 10 hard-fails git installs of packages that declare `prepare` (`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`).
 

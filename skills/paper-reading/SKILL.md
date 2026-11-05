@@ -18,7 +18,7 @@ description: 用 dsh-zotero 插件把一篇文献读成结构化阅读笔记：�
    - 主要结果与数据（活性数值、产量、统计显著性）
    - 结论与局限
    - 与用户课题的关联点（可选，问用户要不要）
-5. **存档**：把要点整理成笔记，经用户确认后写入（注意：多数版本本地 API 只读，`zotero_note` 写入不可用时会明确报错，此时把笔记输出到对话或保存为工作区 Markdown 文件 `notes/<citekey>.md`）。
+5. **存档**：把要点整理成笔记，经用户确认后用 `zotero_note` 写回 Zotero。写入前先确认授权：调 `zotero_authorize`，若 Zotero 弹出「本地 API 授权」窗口请点「始终允许」；已有持久 key 时该工具会直接报告可用。若返回 401，重新授权即可；**不要再假设本地 API 只读**（早期判断有误，实际只是写请求缺 `Zotero-Server-ID` / `Zotero-API-Key` 两个头）。确实无法授权时，才退化为把笔记输出到对话或保存为工作区 Markdown 文件 `notes/<citekey>.md`。
 
 ## 原则
 

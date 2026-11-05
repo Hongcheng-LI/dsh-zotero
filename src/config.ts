@@ -48,4 +48,14 @@ export const Config = Schema.object({
     Schema.natural().description('Max characters returned by zotero_fulltext (default 80000)'),
     'zotero_fulltext 返回的最大字符数，默认 80000',
   ),
+  localApiKey: zhDesc(
+    Schema.string().description(
+      'Local API write key for POST/PATCH/DELETE. Leave blank to auto-read the persistent key Zotero stores after choosing "Always Allow" (or run zotero_authorize). Read-only tools need no key.',
+    ),
+    '本地 API 写入密钥；留空则自动读取 Zotero 里「始终允许」保存的持久 key（或用 zotero_authorize 现场授权）。只读工具无需密钥。',
+  ),
+  authorizeTimeoutMs: zhDesc(
+    Schema.natural().description('Timeout in ms waiting for the Zotero authorization dialog (default 120000)'),
+    '等待 Zotero「本地 API 授权」弹窗的超时（毫秒），默认 120000',
+  ),
 })

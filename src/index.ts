@@ -2,14 +2,25 @@ import { existsSync } from 'node:fs'
 import { stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 import { resolveConfig, trimItems, ZoteroClient, ZoteroError } from './zotero-client.js'
-import { attachmentStoragePath, readFulltextCache, readFulltextFile, resolveStorageDir } from './storage.js'
+import {
+  attachmentStoragePath,
+  readFulltextCache,
+  readFulltextFile,
+  readStoredLocalAPIKey,
+  resolveStorageDir,
+} from './storage.js'
 import { fileUrlToPath, writeAttachment } from './files.js'
 import { extractPdfPages } from './pdf.js'
 import { queryFromTitle, scorePassages, splitPassages } from './retrieve.js'
 import type { PassageInput, ScoredPassage } from './retrieve.js'
 import type {
   ResultMode,
+  ZoteroAnnotationCommentArgs,
+  ZoteroAnnotationCommentResult,
   ZoteroAnnotationsResult,
+  ZoteroAuthorizeResult,
+  ZoteroHighlightArgs,
+  ZoteroHighlightResult,
   ZoteroAttachmentPathResult,
   ZoteroBrowseResult,
   ZoteroCollectionsResult,
@@ -775,6 +786,165 @@ export function apply(ctx: any, config: ZoteroConfig = {}): void {
       if (action === 'append') await client.appendNote(noteKey, text)
       else await client.updateNote(noteKey, text, tags)
       return { action, noteKey }
+    },
+  })
+
+  ctx.tools.register({
+    name: 'zotero_authorize',
+    description:
+      'Request write access to the Zotero local API. On Zotero 7+/9+/10 a modal dialog "本地 API 授权" appears in the Zotero desktop app: choose "始终允许 / Always Allow" for a persistent key (a one-time "Allow" key is consumed after the first write). If a persistent key already exists, this tool reports it without opening a new dialog. Required before zotero_note / zotero_highlight can write; read tools need no key.',
+    parameters: {
+      type: 'object',
+      properties: {
+        appName: { type: 'string', description: 'Display name shown in the Zotero authorization dialog (default dsh-zotero)' },
+        force: {
+          type: 'boolean',
+          description: 'Trigger a fresh authorization dialog even if a persistent key already exists (default false)',
+        },
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        properties: {
+          appName: { type: 'string' },
+          remember: { type: 'boolean' },
+          source: { type: 'string' },
+          hint: { type: 'string' },
+        },
+      },
+      render: (_args: unknown, value: unknown) => {
+        const r = value as ZoteroAuthorizeResult
+        return oneText(`Zotero 本地 API 写入授权（来源 ${r.source}，持久化 ${r.remember}）：${r.hint}`)
+      },
+    },
+    async execute(rawArgs: unknown) {
+      const args = rawArgs as { appName?: string; force?: boolean }
+      const appName = args.appName?.trim() && args.appName.trim() !== '' ? args.appName.trim() : 'dsh-zotero'
+      const stored = readStoredLocalAPIKey({ dataDir: resolved.dataDir })
+      if (!args.force && (resolved.localApiKey || stored)) {
+        return {
+          appName,
+          remember: true,
+          source: resolved.localApiKey ? 'config' : 'stored',
+          hint: resolved.localApiKey
+            ? '插件配置里已设置本地 API 写密钥，无需重新授权；可以直接用 zotero_note / zotero_highlight 写入。'
+            : 'Zotero 里已存在「始终允许」保存的持久写密钥，无需重新授权；可以直接用 zotero_note / zotero_highlight 写入。',
+        } as ZoteroAuthorizeResult
+      }
+      const { remember } = await client.authorize(appName)
+      return {
+        appName,
+        remember,
+        source: 'authorize',
+        hint: remember
+          ? '授权成功且已持久化（始终允许）。现在 zotero_note / zotero_highlight 可以直接写入；读取工具一直可用。'
+          : '授权成功，但这是一次性密钥（点了「允许」而非「始终允许」）：首次成功写入后即失效，下次写入会要求重新授权。建议重新运行本工具并在弹窗选「始终允许」。',
+      } as ZoteroAuthorizeResult
+    },
+  })
+
+  ctx.tools.register({
+    name: 'zotero_highlight',
+    description:
+      'Write a PDF highlight (annotation item) back into Zotero under a PDF attachment. Requires local API write authorization first (run zotero_authorize and choose "Always Allow" in the Zotero dialog). Returns the new annotation key. Get attachmentKey from zotero_item.',
+    parameters: {
+      type: 'object',
+      properties: {
+        attachmentKey: { type: 'string', description: '8-character PDF attachment key (from zotero_item child attachments)' },
+        text: { type: 'string', description: 'The selected / highlighted text in the PDF' },
+        page: { type: 'integer', description: '1-based PDF page sequence number (internally pageIndex = page - 1)' },
+        pageLabel: { type: 'string', description: 'Printed page label shown in the PDF; defaults to String(page)' },
+        color: { type: 'string', description: 'Highlight color as #rrggbb (default #ffd400)' },
+        comment: { type: 'string', description: 'Optional annotation comment' },
+        rects: {
+          type: 'array',
+          items: { type: 'array', items: { type: 'number' } },
+          description: 'PDF-space rectangles [[x1,y1,x2,y2], ...]; defaults to a placeholder rect if omitted',
+        },
+      },
+      required: ['attachmentKey', 'text', 'page'],
+    },
+    output: {
+      schema: {
+        type: 'object',
+        properties: {
+          annotationKey: { type: 'string' },
+          attachmentKey: { type: 'string' },
+          page: { type: 'integer' },
+          pageLabel: { type: 'string' },
+          color: { type: 'string' },
+          annotationType: { type: 'string' },
+        },
+      },
+      render: (_args: unknown, value: unknown) => {
+        const r = value as ZoteroHighlightResult
+        return oneText(
+          `已把高亮写回 Zotero：附件 ${r.attachmentKey} 第 ${r.page} 页（${r.pageLabel}），annotation key = ${r.annotationKey}，颜色 ${r.color}。`,
+        )
+      },
+    },
+    async execute(rawArgs: unknown) {
+      const args = rawArgs as ZoteroHighlightArgs
+      const attachmentKey = requireKey(args.attachmentKey, 'attachmentKey')
+      const text = (args.text ?? '').trim()
+      if (text === '') throw new Error('text 不能为空（高亮必须带选中文字）')
+      const page = clampInt(args.page, 1, 1, 100000)
+      const color = args.color && args.color.trim() !== '' ? args.color.trim() : '#ffd400'
+      const pageLabel = args.pageLabel && args.pageLabel.trim() !== '' ? args.pageLabel.trim() : String(page)
+      const annotationKey = await client.addHighlight({
+        attachmentKey,
+        text,
+        page,
+        pageLabel,
+        color,
+        comment: args.comment,
+        rects: Array.isArray(args.rects) ? args.rects : undefined,
+      })
+      return {
+        annotationKey,
+        attachmentKey,
+        page,
+        pageLabel,
+        color,
+        annotationType: 'highlight',
+      } as ZoteroHighlightResult
+    },
+  })
+
+  ctx.tools.register({
+    name: 'zotero_annotation_comment',
+    description:
+      'Update the comment (annotationComment) of an existing Zotero PDF annotation/highlight. Use zotero_annotations first to get the annotation key. An empty comment clears the comment. Requires local API write authorization (zotero_authorize).',
+    parameters: {
+      type: 'object',
+      properties: {
+        annotationKey: { type: 'string', description: 'Annotation item key (8 chars, from zotero_annotations)' },
+        comment: { type: 'string', description: 'New comment text; empty string clears the comment' },
+      },
+      required: ['annotationKey', 'comment'],
+    },
+    output: {
+      schema: {
+        type: 'object',
+        properties: {
+          annotationKey: { type: 'string' },
+          comment: { type: 'string' },
+          updated: { type: 'boolean' },
+        },
+      },
+      render: (_args: unknown, value: unknown) => {
+        const r = value as ZoteroAnnotationCommentResult
+        return oneText(`已更新批注 ${r.annotationKey} 的评论：${r.comment === '' ? '（已清空）' : r.comment}`)
+      },
+    },
+    async execute(rawArgs: unknown) {
+      const args = rawArgs as ZoteroAnnotationCommentArgs
+      const annotationKey = requireKey(args.annotationKey, 'annotationKey')
+      if (typeof args.comment !== 'string') throw new Error('comment 必须是字符串（空字符串表示清空评论）')
+      const comment = args.comment
+      await client.updateAnnotationComment(annotationKey, comment)
+      return { annotationKey, comment, updated: true } as ZoteroAnnotationCommentResult
     },
   })
 

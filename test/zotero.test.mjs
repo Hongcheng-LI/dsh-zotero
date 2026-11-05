@@ -49,19 +49,22 @@ test('resolveConfig defaults, validation and new fields', () => {
   assert.throws(() => resolveConfig({ library: 'bogus' }))
 })
 
-test('apply registers fourteen zotero tools with valid JSON schemas', () => {
+test('apply registers seventeen zotero tools with valid JSON schemas', () => {
   const ctx = harness()
   apply(ctx, {})
   const names = ctx.all.map((t) => t.name)
   assert.deepEqual([...names].sort(), [
+    'zotero_annotation_comment',
     'zotero_annotations',
     'zotero_attachment_path',
+    'zotero_authorize',
     'zotero_browse',
     'zotero_collections',
     'zotero_digest',
     'zotero_download',
     'zotero_export',
     'zotero_fulltext',
+    'zotero_highlight',
     'zotero_item',
     'zotero_note',
     'zotero_notes',

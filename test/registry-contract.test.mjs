@@ -255,11 +255,11 @@ maybeTest('runtime contract: every tool registers through the real DSH registry'
   ctx.reflect.provide('systemPrompt', { tools() {}, section() {} })
   const registry = new ToolRuntime(ctx, { mode: 'native' })
   const tools = collectTools({})
-  assert.equal(tools.length, 14)
+  assert.equal(tools.length, 17)
   for (const definition of tools) registry.register(definition)
   // 通过注册表把工具 schema 投影出来（模型可见面），确认无损且可反序列化
   const schemas = registry.schemas()
-  assert.equal(schemas.filter((s) => s.name.startsWith('zotero_')).length, 14)
+  assert.equal(schemas.filter((s) => s.name.startsWith('zotero_')).length, 17)
   for (const schema of schemas) {
     assert.ok(schema.description?.length > 20, `${schema.name} description present`)
     assert.equal(JSON.parse(JSON.stringify(schema.parameters)).type, 'object')

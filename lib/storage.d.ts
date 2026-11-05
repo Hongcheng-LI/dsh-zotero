@@ -16,3 +16,21 @@ export declare function readFulltextFile(cachePath: string): Promise<string | nu
 export declare function readFulltextCache(storageDir: string, attachmentKey: string): Promise<string | null>;
 /** 由附件的 data.path（storage:xxx.pdf）拼出 storage 内的绝对路径；非 storage 附件返回 null */
 export declare function attachmentStoragePath(storageDir: string, attachmentKey: string, path: string | undefined): string | null;
+/**
+ * 解析 Zotero 的 Firefox profile 目录（含 prefs.js）。
+ * 与 resolveStorageDir 共用 profiles.ini 解析；找不到返回 null。
+ * Zotero 把本地 API 授权密钥写到 <profile>/localAPIKeys.json。
+ */
+export declare function resolveProfileDir(opts?: {
+    dataDir?: string;
+}): string | null;
+/**
+ * 读取 Zotero 7+ 本地 API 的持久写密钥。
+ * 用户在「本地 API 授权」弹窗点「始终允许」后，Zotero 会把
+ * {"keys":[{"key":"...","appName":"...","remember":true,...}]}
+ * 写到 <profile>/localAPIKeys.json（server_localAPI.js 的 _localAPIKeysPath）。
+ * 优先取 appName 含 dsh 的持久 key，其次任意 remember 的 key，最后任意 key。
+ */
+export declare function readStoredLocalAPIKey(opts?: {
+    dataDir?: string;
+}): string | undefined;

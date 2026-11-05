@@ -17,6 +17,14 @@ export type ZoteroConfig = {
   storageDir?: string
   /** zotero_fulltext 返回的最大字符数，默认 80000 */
   maxFulltextChars?: number
+  /**
+   * Zotero 本地 API 写密钥。留空时自动读取 Zotero profile 中「始终允许」持久化的 key
+   * （<profile>/localAPIKeys.json），或用 zotero_authorize 现场授权。
+   * 读取类工具完全不需要它。
+   */
+  localApiKey?: string
+  /** zotero_authorize 等待授权弹窗的超时（毫秒），默认 120000 */
+  authorizeTimeoutMs?: number
 }
 
 /** 检索结果粒度：minimal 只留定位字段，preview 附截断摘要，full 全量 */
@@ -159,6 +167,8 @@ export type ZoteroAnnotation = {
   /** PDF 内印刷页码标签（annotationPageLabel） */
   pageLabel?: string
   color?: string
+  /** PDF 坐标矩形 [[x1,y1,x2,y2], ...]（annotationPosition.rects） */
+  rects?: number[][]
   dateModified?: string
 }
 
@@ -223,4 +233,55 @@ export type ZoteroDigestResult = {
   citationFormat: 'bibtex'
   query?: string
   passages: ZoteroPassage[]
+}
+
+/** POST /api/local/authorize 的授权结果。Zotero-Server-ID 不暴露给模型。 */
+export type ZoteroAuthorizeResult = {
+  appName: string
+  /** 是否持久化（用户点了「始终允许」）；false 表示一次性 key，首次写入后即失效 */
+  remember: boolean
+  /** 密钥来源：现场授权 / 配置 / Zotero profile 持久文件 */
+  source: 'authorize' | 'config' | 'stored'
+  hint: string
+}
+
+/** 创建 PDF 高亮批注（annotation item）的参数 */
+export type ZoteroHighlightArgs = {
+  /** 所属 PDF 附件的 8 位 key（zotero_item 的附件列表） */
+  attachmentKey: string
+  /** 选中的原文 */
+  text: string
+  /** PDF 页序，1 起；内部换算为 pageIndex = page - 1 */
+  page: number
+  /** PDF 内印刷页码标签；缺省用 page 的字符串 */
+  pageLabel?: string
+  /** #rrggbb，缺省 #ffd400 */
+  color?: string
+  /** 批注评论 */
+  comment?: string
+  /** PDF 坐标矩形数组 [[x1,y1,x2,y2], ...]；缺省给占位矩形 */
+  rects?: number[][]
+}
+
+export type ZoteroHighlightResult = {
+  annotationKey: string
+  attachmentKey: string
+  page: number
+  pageLabel: string
+  color: string
+  annotationType: string
+}
+
+/** 修改已有 PDF 批注的批注评论（annotationComment） */
+export type ZoteroAnnotationCommentArgs = {
+  /** 批注条目的 8 位 key（zotero_annotations 返回的 key） */
+  annotationKey: string
+  /** 新评论；空字符串表示清空评论 */
+  comment: string
+}
+
+export type ZoteroAnnotationCommentResult = {
+  annotationKey: string
+  comment: string
+  updated: boolean
 }

@@ -2,6 +2,7 @@ import { readFile, stat } from 'node:fs/promises'
 import { request as httpRequest } from 'node:http'
 import { basename } from 'node:path'
 import { fileUrlToPath } from './files.js'
+import { readStoredLocalAPIKey } from './storage.js'
 import type {
   ZoteroAnnotation,
   ZoteroAttachment,
@@ -19,6 +20,8 @@ const DEFAULT_TIMEOUT_MS = 15000
 const DEFAULT_MAX_BYTES = 64 * 1024 * 1024
 const DEFAULT_MAX_LIMIT = 50
 const DEFAULT_MAX_FULLTEXT_CHARS = 80000
+/** 授权弹窗需要人工点击，等待时间单独放宽到 2 分钟 */
+const DEFAULT_AUTHORIZE_TIMEOUT_MS = 120000
 
 export type ResolvedConfig = {
   baseUrl: string
@@ -30,6 +33,10 @@ export type ResolvedConfig = {
   dataDir: string | undefined
   storageDir: string | undefined
   maxFulltextChars: number
+  /** 显式配置的本地 API 写密钥；缺省自动读 Zotero profile 的持久 key */
+  localApiKey: string | undefined
+  /** 授权弹窗等待时间（毫秒），单独放宽，默认 120000 */
+  authorizeTimeoutMs: number
 }
 
 export function resolveConfig(config: ZoteroConfig = {}): ResolvedConfig {
@@ -48,6 +55,8 @@ export function resolveConfig(config: ZoteroConfig = {}): ResolvedConfig {
     dataDir: config.dataDir && config.dataDir.trim() !== '' ? config.dataDir.trim() : undefined,
     storageDir: config.storageDir && config.storageDir.trim() !== '' ? config.storageDir.trim() : undefined,
     maxFulltextChars: positiveInt(config.maxFulltextChars, DEFAULT_MAX_FULLTEXT_CHARS),
+    localApiKey: config.localApiKey && config.localApiKey.trim() !== '' ? config.localApiKey.trim() : undefined,
+    authorizeTimeoutMs: positiveInt(config.authorizeTimeoutMs, DEFAULT_AUTHORIZE_TIMEOUT_MS),
   }
 }
 
@@ -75,15 +84,67 @@ type RawItem = {
 }
 
 export class ZoteroClient {
-  constructor(private readonly cfg: ResolvedConfig) {}
+  private serverId: string | undefined
+  private apiKey: string | undefined
+
+  constructor(private readonly cfg: ResolvedConfig) {
+    this.apiKey = cfg.localApiKey
+  }
+
+  /** 缓存每个响应头里的 Zotero-Server-ID（server_localAPI.js：每个响应都带）。 */
+  private cacheServerId(response: Response): void {
+    const sid = response.headers.get('Zotero-Server-ID')
+    if (sid) this.serverId = sid
+  }
+
+  /**
+   * 写请求前确保拿到 Server ID。GET 无需认证，一次轻量请求读响应头即可。
+   * 不走 request() 以免递归；失败时返回 undefined，让写请求带出更明确的错误。
+   */
+  private async ensureServerId(): Promise<string | undefined> {
+    if (this.serverId) return this.serverId
+    const url = `${this.cfg.baseUrl}/api/${this.cfg.libraryPath}/items?limit=1&format=json`
+    try {
+      const response = await fetch(url, {
+        headers: { 'Zotero-Allowed-Request': 'true' },
+        signal: AbortSignal.timeout(this.cfg.timeoutMs),
+      })
+      this.cacheServerId(response)
+      await response.body?.cancel().catch(() => {})
+    } catch {
+      // 连接探测失败时保持 undefined，写请求会给出更准确的错误
+    }
+    return this.serverId
+  }
+
+  /** 解析写密钥：显式配置 > Zotero profile 中「始终允许」持久化的 key。 */
+  private writeKey(): string | undefined {
+    if (this.apiKey) return this.apiKey
+    const stored = readStoredLocalAPIKey({ dataDir: this.cfg.dataDir })
+    if (stored) {
+      this.apiKey = stored
+      return stored
+    }
+    return undefined
+  }
 
   private async request(path: string, init: RequestInit = {}): Promise<Response> {
     const url = `${this.cfg.baseUrl}/api/${this.cfg.libraryPath}${path}`
+    const method = (init.method ?? 'GET').toUpperCase()
+    const isWrite = method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'DELETE'
+    const headers = new Headers(init.headers)
+    headers.set('Zotero-Allowed-Request', 'true')
+    if (isWrite) {
+      const sid = await this.ensureServerId()
+      if (sid) headers.set('Zotero-Server-ID', sid)
+      const key = this.writeKey()
+      if (key) headers.set('Zotero-API-Key', key)
+    }
     let response: Response
     try {
       response = await fetch(url, {
         ...init,
-        headers: { 'Zotero-Allowed-Request': 'true', ...(init.headers ?? {}) },
+        headers,
         signal: AbortSignal.timeout(this.cfg.timeoutMs),
       })
     } catch (error) {
@@ -92,22 +153,90 @@ export class ZoteroClient {
         error,
       )
     }
+    this.cacheServerId(response)
     if (!response.ok) {
       const body = await response.text().catch(() => '')
       if (response.status === 400 && body.includes('Endpoint does not support method')) {
         throw new ZoteroError(
-          '当前 Zotero 本地 API 为只读，不支持该写操作（POST/PATCH/DELETE 未开放）：笔记的创建/修改/删除不可用，读取不受影响。',
+          '该端点不支持此 HTTP 方法（Endpoint does not support method）。请检查端点与动词是否匹配：/items 支持 GET/POST/DELETE，/items/<key> 支持 GET/PUT/PATCH/DELETE。',
         )
       }
-      if (response.status === 428 && body.includes('Zotero-Server-ID')) {
+      if (response.status === 428) {
+        // Server-ID 变化（Zotero 重启/换库）：丢弃缓存，下次写请求会重新取
+        this.serverId = undefined
         throw new ZoteroError(
-          '当前 Zotero 版本的本地 API 要求写操作提供 Zotero-Server-ID（跨站写保护，428）。读取不受影响；笔记的创建/修改/删除在此 Zotero 版本暂不可用。',
+          `写请求缺少或不匹配 Zotero-Server-ID（跨站写保护，428）。已清除缓存，请重试；若持续出现请重启 Zotero。${body ? ' 原文：' + body.slice(0, 200) : ''}`,
+        )
+      }
+      if (response.status === 412) {
+        this.serverId = undefined
+        throw new ZoteroError(
+          `Zotero-Server-ID 不匹配（412）。已清除缓存，请重试。${body ? ' 原文：' + body.slice(0, 200) : ''}`,
+        )
+      }
+      if (response.status === 401) {
+        this.apiKey = undefined
+        throw new ZoteroError(
+          '本地 API 写密钥缺失或失效（401）。请在 Zotero 弹出的「本地 API 授权」窗口点「始终允许」，或用 zotero_authorize 工具重新授权；读取不受影响。' +
+            (body ? ' 原文：' + body.slice(0, 200) : ''),
         )
       }
       const hint = response.status === 405 || response.status === 501 ? '（当前 Zotero 版本可能不支持该写操作）' : ''
       throw new ZoteroError(`Zotero API ${response.status} ${response.statusText}${hint}${body ? '：' + body.slice(0, 300) : ''}`)
     }
     return response
+  }
+
+  /**
+   * 触发 Zotero 桌面端的「本地 API 授权」弹窗，返回写密钥。
+   * 端点 /api/local/authorize 不在 /api/<libraryPath> 下，故直接 fetch，不走 request()。
+   * 用户点「始终允许」→ remember=true，key 由 Zotero 持久化到 <profile>/localAPIKeys.json；
+   * 点「允许」→ 一次性 key，首次成功写入后即被消费，下次写会 401。
+   */
+  async authorize(appName = 'dsh-zotero'): Promise<{ key: string; remember: boolean }> {
+    const url = `${this.cfg.baseUrl}/api/local/authorize`
+    const headers: Record<string, string> = {
+      'Zotero-Allowed-Request': 'true',
+      'Content-Type': 'application/json',
+    }
+    const sid = await this.ensureServerId()
+    if (sid) headers['Zotero-Server-ID'] = sid
+    let response: Response
+    try {
+      response = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ appName }),
+        signal: AbortSignal.timeout(this.cfg.authorizeTimeoutMs),
+      })
+    } catch (error) {
+      throw new ZoteroError(
+        `请求 Zotero 本地 API 授权失败（${url}）。请确认 Zotero 已启动、本地 API 已启用，并在桌面端「本地 API 授权」弹窗中点击允许。`,
+        error,
+      )
+    }
+    this.cacheServerId(response)
+    const text = await response.text().catch(() => '')
+    if (response.status === 429) {
+      throw new ZoteroError(`授权请求过于频繁（429 Too many authorization requests）。请稍后重试。${text ? ' 原文：' + text.slice(0, 200) : ''}`)
+    }
+    if (!response.ok) {
+      throw new ZoteroError(`Zotero 授权失败 ${response.status}：${text.slice(0, 300)}`)
+    }
+    let parsed: { key?: string; remember?: boolean; denied?: boolean }
+    try {
+      parsed = JSON.parse(text) as typeof parsed
+    } catch {
+      throw new ZoteroError(`Zotero 授权返回非 JSON：${text.slice(0, 300)}`)
+    }
+    if (parsed.denied === true) {
+      throw new ZoteroError('用户在授权弹窗点了「拒绝」，未获得写密钥。')
+    }
+    if (!parsed.key || parsed.key === '') {
+      throw new ZoteroError(`Zotero 授权响应里没有 key：${text.slice(0, 300)}`)
+    }
+    this.apiKey = parsed.key
+    return { key: parsed.key, remember: parsed.remember === true }
   }
 
   /**
@@ -301,10 +430,75 @@ export class ZoteroClient {
   }
 
   async addNote(parentKey: string, text: string, tags?: string[]): Promise<string> {
-    const created = await this.postNote([
+    const created = await this.postItems([
       { itemType: 'note', parentItem: parentKey, note: text, tags: (tags ?? []).map((t) => ({ tag: t })) },
     ])
     return created
+  }
+
+  /**
+   * 在指定 PDF 附件下创建一条高亮批注（annotation item）。
+   * 字段与 Zotero 本地 API 的 annotation JSON 对齐（实测库内已有 2040 条同类条目）：
+   * annotationPosition 是「转义后的 JSON 字符串」，pageIndex 从 0 起；
+   * annotationPageLabel 是 PDF 内印刷页码。
+   * annotationSortIndex 对 PDF 附件必须匹配 /^\d{5}\|\d{6}\|\d{5}$/
+   * （Zotero chrome/content/zotero/xpcom/data/item.js:4547 的 PDF 分支校验），
+   * 即「页序(5)|纵向(6)|横向(5)」三段。这里用首个 rect 的坐标派生后两段，
+   * 只保证格式合法与阅读顺序大致合理，不精确复现 Zotero PDF reader 内部的坐标换算；
+   * 不传 rects 时使用占位矩形，高亮在 reader 中的落点不精确。
+   */
+  async addHighlight(args: {
+    attachmentKey: string
+    text: string
+    page: number
+    pageLabel?: string
+    color?: string
+    comment?: string
+    rects?: number[][]
+  }): Promise<string> {
+    const page = Number.isFinite(args.page) && args.page > 0 ? Math.floor(args.page) : 1
+    const pageIndex = page - 1
+    const rects = Array.isArray(args.rects) && args.rects.length > 0 ? args.rects : [[100, 100, 110, 110]]
+    const firstRect = Array.isArray(rects[0]) ? rects[0] : [0, 0, 0, 0]
+    const top = typeof firstRect[1] === 'number' && Number.isFinite(firstRect[1]) ? firstRect[1] : 0
+    const left = typeof firstRect[0] === 'number' && Number.isFinite(firstRect[0]) ? firstRect[0] : 0
+    const yPart = Math.min(999999, Math.max(0, Math.round(top * 10)))
+    const xPart = Math.min(99999, Math.max(0, Math.round(left * 10)))
+    const item: Record<string, unknown> = {
+      itemType: 'annotation',
+      parentItem: args.attachmentKey,
+      annotationType: 'highlight',
+      annotationText: args.text,
+      annotationComment: args.comment ?? '',
+      annotationColor: args.color ?? '#ffd400',
+      annotationPageLabel: args.pageLabel ?? String(page),
+      annotationSortIndex: `${String(pageIndex).padStart(5, '0')}|${String(yPart).padStart(6, '0')}|${String(xPart).padStart(5, '0')}`,
+      annotationPosition: JSON.stringify({ pageIndex, rects }),
+      tags: [],
+    }
+    return await this.postItems([item])
+  }
+
+  /**
+   * 修改已有 PDF 批注的批注评论。Zotero annotation 是普通 item，
+   * 走 Item 端点的 PATCH，并带 If-Unmodified-Since-Version 做并发保护。
+   */
+  async updateAnnotationComment(annotationKey: string, comment: string): Promise<void> {
+    const head = await this.getJson<RawItem>(`/items/${encodeURIComponent(annotationKey)}`)
+    if (head?.data?.itemType !== 'annotation') {
+      throw new ZoteroError(`${annotationKey} 不是 PDF 批注条目（用 zotero_annotations 获取批注 key）`)
+    }
+    if (typeof head.version !== 'number' || head.version < 0) {
+      throw new ZoteroError(`无法获取批注 ${annotationKey} 的版本号`)
+    }
+    await this.request(`/items/${encodeURIComponent(annotationKey)}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        'If-Unmodified-Since-Version': String(head.version),
+      },
+      body: JSON.stringify({ itemType: 'annotation', annotationComment: comment }),
+    })
   }
 
   /** 在现有笔记末尾追加内容 */
@@ -352,15 +546,22 @@ export class ZoteroClient {
     })
   }
 
-  private async postNote(items: Array<Record<string, unknown>>): Promise<string> {
+  /** 批量创建条目（POST /items），返回第一个新条目的 key */
+  private async postItems(items: Array<Record<string, unknown>>): Promise<string> {
     const response = await this.request(`/items?${qs([['format', 'json']])}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(items),
     })
-    const created = (await response.json()) as { success?: Record<string, string> }
+    const created = (await response.json()) as {
+      success?: Record<string, string>
+      failed?: Record<string, { message?: string } | string>
+    }
     const key = created?.success?.['0']
-    if (!key) throw new ZoteroError('Zotero 返回成功但未包含新笔记的 key')
+    if (!key) {
+      const failed = created?.failed ? JSON.stringify(created.failed).slice(0, 400) : ''
+      throw new ZoteroError(`Zotero 未返回新条目的 key${failed ? '，失败详情：' + failed : ''}`)
+    }
     return key
   }
 
@@ -448,6 +649,7 @@ export class ZoteroClient {
           page: position?.pageIndex !== undefined ? position.pageIndex + 1 : undefined,
           pageLabel: str(data.annotationPageLabel),
           color: str(data.annotationColor),
+          ...(position?.rects ? { rects: position.rects } : {}),
           dateModified: str(data.dateModified),
         })
       }
@@ -549,12 +751,20 @@ function str(value: unknown): string | undefined {
 }
 
 /** annotationPosition 是 JSON 字符串，如 {"pageIndex":0,"rects":[[...]]}；解析失败返回 null */
-function parseAnnotationPosition(raw: string | undefined): { pageIndex?: number } | null {
+function parseAnnotationPosition(raw: string | undefined): { pageIndex?: number; rects?: number[][] } | null {
   if (!raw) return null
   try {
-    const parsed = JSON.parse(raw) as { pageIndex?: unknown }
+    const parsed = JSON.parse(raw) as { pageIndex?: unknown; rects?: unknown }
     const pageIndex = typeof parsed?.pageIndex === 'number' && parsed.pageIndex >= 0 ? parsed.pageIndex : undefined
-    return { pageIndex }
+    const rects = Array.isArray(parsed?.rects)
+      ? parsed.rects.filter(
+          (rect): rect is number[] =>
+            Array.isArray(rect) &&
+            rect.length === 4 &&
+            rect.every((value) => typeof value === 'number' && Number.isFinite(value)),
+        )
+      : undefined
+    return { pageIndex, ...(rects && rects.length > 0 ? { rects } : {}) }
   } catch {
     return null
   }
