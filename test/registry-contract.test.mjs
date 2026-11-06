@@ -297,6 +297,9 @@ maybeTest('runtime contract: execute every tool against a mock Zotero and valida
     const tool = byName.get(name)
     assert.ok(tool, `${name} registered`)
     const value = await tool.execute(args, exec)
+    // DSH 会拒绝含显式 undefined 的结果（INVALID_TOOL_OUTPUT）：execute 的返回值必须无损 JSON。
+    // 回归用例：Zotero 10 顶层分类 parentCollection: false、条目缺省可选字段。
+    assert.deepEqual(snapshot(value), value, `${name} execute result must be lossless JSON (no explicit undefined)`)
     const detached = snapshot(value)
     const violations = validateJsonSchemaValue(tool.output.schema, detached, 'value')
     assert.deepEqual(violations, [], `${name} output must match its declared schema`)
