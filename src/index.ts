@@ -12,6 +12,7 @@ import {
 import { fileUrlToPath, writeAttachment } from './files.js'
 import { extractPdfPages } from './pdf.js'
 import { queryFromTitle, scorePassages, splitPassages } from './retrieve.js'
+import { toLosslessJson } from './tool-result.js'
 import type { PassageInput, ScoredPassage } from './retrieve.js'
 import type {
   ResultMode,
@@ -285,6 +286,15 @@ function renderDigest(value: ZoteroDigestResult): TextBlock[] {
 export function apply(ctx: any, config: ZoteroConfig = {}): void {
   const resolved = resolveConfig(config)
   const client = new ZoteroClient(resolved)
+  // 所有工具统一出口：返回值先归一化为无损 JSON。DSH 要求工具结果是 lossless JSON，
+  // 而 Zotero 的可选字段常被 str() 转成 undefined（例如 Zotero 10 顶层分类的
+  // parentCollection: false），对象上出现显式 undefined 会让 DSH 判整个结果为非法输出。
+  const registerTool = (definition: any): void => {
+    ctx.tools.register({
+      ...definition,
+      execute: async (...toolArgs: unknown[]) => toLosslessJson(await definition.execute(...toolArgs)),
+    })
+  }
   const storageDir = resolveStorageDir({ dataDir: resolved.dataDir, storageDir: resolved.storageDir })
 
   // Load-time nudge only: never break boot, tools report the details instead.
@@ -435,7 +445,7 @@ export function apply(ctx: any, config: ZoteroConfig = {}): void {
     return { passages: scorePassages(raw, query), sourcesUsed }
   }
 
-  ctx.tools.register({
+  registerTool({
     name: 'zotero_collections',
     description:
       'List the collections (folders) of the Zotero library, with their keys and item counts. Use a returned collectionKey as the collection argument of zotero_search to scope a search. Requires Zotero 7+ (tested on 9.x) running locally with "Allow other applications on this computer" enabled.',
@@ -452,7 +462,7 @@ export function apply(ctx: any, config: ZoteroConfig = {}): void {
     },
   })
 
-  ctx.tools.register({
+  registerTool({
     name: 'zotero_search',
     description:
       'Search the local Zotero library by keyword (title/creator/year, Zotero quick-search), with filters for item type, collection, tag and publication year range, plus sorting and pagination. Control payload size with mode. Returns compact rows with item keys; use zotero_item with a key for full metadata and attachments.',
@@ -503,7 +513,7 @@ export function apply(ctx: any, config: ZoteroConfig = {}): void {
     },
   })
 
-  ctx.tools.register({
+  registerTool({
     name: 'zotero_recent',
     description:
       'List the most recently ADDED items of the Zotero library (newest first, attachments and notes excluded). Use it for "what did I just import" questions; use zotero_item with a key for details.',
@@ -538,7 +548,7 @@ export function apply(ctx: any, config: ZoteroConfig = {}): void {
     },
   })
 
-  ctx.tools.register({
+  registerTool({
     name: 'zotero_item',
     description:
       'Read one Zotero item in full by its key (from zotero_search): authors, publication venue, DOI, abstract and tags, plus its child attachments (PDF keys) and note count.',
@@ -560,7 +570,7 @@ export function apply(ctx: any, config: ZoteroConfig = {}): void {
     },
   })
 
-  ctx.tools.register({
+  registerTool({
     name: 'zotero_fulltext',
     description:
       'Read the full text of a Zotero item (its PDF or other main attachment) as plain text — from Zotero\'s own fulltext cache (.zotero-ft-cache) when available, otherwise parsed on the fly from the local PDF (pdfjs-dist) and cached. Only for remote-link-only attachments does it download a copy to the workspace and return its path. Prefer this over zotero_download when you only need the text.',
@@ -623,7 +633,7 @@ export function apply(ctx: any, config: ZoteroConfig = {}): void {
     },
   })
 
-  ctx.tools.register({
+  registerTool({
     name: 'zotero_download',
     description:
       'Download one attachment (typically a PDF) of a Zotero item to the local filesystem — by default into the session workspace so the model can read it. Use the attachmentKey values listed by zotero_item. If you only need the text, prefer zotero_fulltext. Size is capped by maxAttachmentBytes.',
@@ -660,7 +670,7 @@ export function apply(ctx: any, config: ZoteroConfig = {}): void {
     },
   })
 
-  ctx.tools.register({
+  registerTool({
     name: 'zotero_attachment_path',
     description:
       'Resolve the on-disk path of a stored attachment (zero-copy): returns the absolute path inside Zotero storage so the model can read the original file directly. Works for stored attachments; linked attachments report their recorded path.',
@@ -711,7 +721,7 @@ export function apply(ctx: any, config: ZoteroConfig = {}): void {
     },
   })
 
-  ctx.tools.register({
+  registerTool({
     name: 'zotero_notes',
     description:
       'List or search the notes of the Zotero library: with itemKey, the child notes of that item; otherwise a library-wide keyword search over note text (newest first). Returns noteKeys for zotero_note (append/update/delete).',
@@ -742,7 +752,7 @@ export function apply(ctx: any, config: ZoteroConfig = {}): void {
     },
   })
 
-  ctx.tools.register({
+  registerTool({
     name: 'zotero_note',
     description:
       'Write notes to Zotero: create a child note under an item, or append to / update / delete an existing note (noteKeys from zotero_notes). Only write notes the user asked for; never invent content.',
@@ -789,7 +799,7 @@ export function apply(ctx: any, config: ZoteroConfig = {}): void {
     },
   })
 
-  ctx.tools.register({
+  registerTool({
     name: 'zotero_authorize',
     description:
       'Request write access to the Zotero local API. On Zotero 7+/9+/10 a modal dialog "本地 API 授权" appears in the Zotero desktop app: choose "始终允许 / Always Allow" for a persistent key (a one-time "Allow" key is consumed after the first write). If a persistent key already exists, this tool reports it without opening a new dialog. Required before zotero_note / zotero_highlight can write; read tools need no key.',
@@ -844,7 +854,7 @@ export function apply(ctx: any, config: ZoteroConfig = {}): void {
     },
   })
 
-  ctx.tools.register({
+  registerTool({
     name: 'zotero_highlight',
     description:
       'Write a PDF highlight (annotation item) back into Zotero under a PDF attachment. Requires local API write authorization first (run zotero_authorize and choose "Always Allow" in the Zotero dialog). Returns the new annotation key. Get attachmentKey from zotero_item.',
@@ -912,7 +922,7 @@ export function apply(ctx: any, config: ZoteroConfig = {}): void {
     },
   })
 
-  ctx.tools.register({
+  registerTool({
     name: 'zotero_annotation_comment',
     description:
       'Update the comment (annotationComment) of an existing Zotero PDF annotation/highlight. Use zotero_annotations first to get the annotation key. An empty comment clears the comment. Requires local API write authorization (zotero_authorize).',
@@ -948,7 +958,7 @@ export function apply(ctx: any, config: ZoteroConfig = {}): void {
     },
   })
 
-  ctx.tools.register({
+  registerTool({
     name: 'zotero_export',
     description:
       'Export citation data for one or more Zotero items as BibTeX, RIS or CSL JSON. Keys are exported one by one (the local API ignores multi-key filters) and the results are concatenated. Use keys from zotero_search/zotero_item; paste results into .bib/.ris files or reference managers.',
@@ -1016,7 +1026,7 @@ export function apply(ctx: any, config: ZoteroConfig = {}): void {
     },
   })
 
-  ctx.tools.register({
+  registerTool({
     name: 'zotero_annotations',
     description:
       'Read the PDF annotations (highlights, in-Zotero annotation notes, underlines) on a Zotero item\'s attachments, each with PDF page number, printed page label, quoted text and your comment. Call after zotero_item to pick a target item.',
@@ -1048,7 +1058,7 @@ export function apply(ctx: any, config: ZoteroConfig = {}): void {
     },
   })
 
-  ctx.tools.register({
+  registerTool({
     name: 'zotero_browse',
     description:
       'List the library\'s user tags or saved (smart) searches. Feed a returned tag into zotero_search\'s tag parameter to filter; saved searches are listed with their conditions for awareness.',
@@ -1084,7 +1094,7 @@ export function apply(ctx: any, config: ZoteroConfig = {}): void {
     },
   })
 
-  ctx.tools.register({
+  registerTool({
     name: 'zotero_retrieve',
     description:
       'Retrieve the most query-relevant passages from one Zotero item, ranked across its PDF full text (with page anchors), child notes and PDF annotations. Use it for precise quoting with page numbers, or answering "where does this paper say X".',
@@ -1129,7 +1139,7 @@ export function apply(ctx: any, config: ZoteroConfig = {}): void {
     },
   })
 
-  ctx.tools.register({
+  registerTool({
     name: 'zotero_digest',
     description:
       'One-shot briefing for a Zotero item: full metadata, abstract, BibTeX citation, attachment list and the top query-relevant passages (full text + annotations + notes, with page anchors). Omit query to rank passages by title terms. Use it as the first call for "summarize this paper" tasks.',

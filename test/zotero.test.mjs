@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
+import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { apply } from '../lib/index.js'
+import { toLosslessJson } from '../lib/tool-result.js'
 import { resolveConfig, slimItem, trimItems } from '../lib/zotero-client.js'
 import { noteToText } from '../lib/notes.js'
 import { queryFromTitle, scorePassages, splitPassages, tokenize } from '../lib/retrieve.js'
@@ -264,5 +266,63 @@ test('writeAttachment writes into cwd and deconflicts names', async () => {
     assert.ok(existsSync(p1))
   } finally {
     rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('toLosslessJson strips explicit undefined so DSH accepts tool results', () => {
+  const value = { kept: 1, dropped: undefined, nested: { dropped: undefined, kept: 'x' }, list: [1, undefined] }
+  const clean = toLosslessJson(value)
+  assert.deepEqual(clean, { kept: 1, nested: { kept: 'x' }, list: [1, null] })
+  assert.deepEqual(JSON.parse(JSON.stringify(clean)), clean, 'result must survive a JSON round-trip')
+  assert.deepEqual(toLosslessJson({ ok: true }), { ok: true }, 'plain JSON data is unchanged')
+})
+
+test('tool results stay lossless JSON with Zotero 10 payloads (parentCollection: false)', async () => {
+  const item = {
+    key: 'ABCD1234',
+    version: 3,
+    data: { key: 'ABCD1234', itemType: 'journalArticle', title: 'Only required fields', dateAdded: '2026-01-01' },
+    meta: {},
+  }
+  const collections = [
+    { key: 'ROOT0001', version: 1, data: { key: 'ROOT0001', name: 'Root', parentCollection: false }, meta: { numItems: 1 } },
+    { key: 'CHILD001', version: 1, data: { key: 'CHILD001', name: 'Child', parentCollection: 'ROOT0001' }, meta: { numItems: 0 } },
+  ]
+  const respond = (res, body) => {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Total-Results': String(body.length ?? 0) })
+    res.end(JSON.stringify(body))
+  }
+  const server = createServer((req, res) => {
+    const path = new URL(req.url, 'http://mock').pathname
+    if (path === '/api/users/0/collections') return respond(res, collections)
+    if (path === '/api/users/0/items/ABCD1234/children') return respond(res, [])
+    if (path === '/api/users/0/items/ABCD1234') return respond(res, item)
+    if (path === '/api/users/0/items' || path === '/api/users/0/items/top') return respond(res, [item])
+    res.writeHead(404)
+    res.end('{}')
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const baseUrl = `http://127.0.0.1:${server.address().port}`
+  try {
+    const h = harness()
+    apply(h, { baseUrl })
+    const lossless = (value) => {
+      assert.deepEqual(JSON.parse(JSON.stringify(value)), value, 'tool result must be lossless JSON (no explicit undefined)')
+      return value
+    }
+    const cols = lossless(await h.tool('zotero_collections').execute({}, {}))
+    assert.equal(cols.collections.length, 2)
+    assert.equal(cols.collections[0].parentCollection, false, '顶层分类保持 false（Zotero 10 的真实返回）')
+    assert.equal(cols.collections[1].parentCollection, 'ROOT0001')
+
+    const detail = lossless(await h.tool('zotero_item').execute({ key: 'ABCD1234' }, {}))
+    assert.equal(detail.item.title, 'Only required fields')
+    assert.deepEqual(detail.attachments, [])
+
+    const search = lossless(await h.tool('zotero_search').execute({ query: 'required', mode: 'full' }, {}))
+    assert.equal(search.count, 1)
+  } finally {
+    server.closeAllConnections?.()
+    await new Promise((resolve) => server.close(resolve))
   }
 })

@@ -56,7 +56,7 @@ export type ZoteroItem = {
 export type ZoteroCollection = {
   key: string
   name: string
-  parentCollection?: string | false
+  parentCollection: string | false
   numberOfItems?: number
 }
 
